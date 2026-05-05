@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+transformers
+torch
+sentencepiece
+accelerate
+scikit-learn
+joblib
+python-multipart
