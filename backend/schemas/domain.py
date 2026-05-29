@@ -26,51 +26,212 @@ class WhatsAppStatusUpdate(BaseModel):
     status: str
     reason: Optional[str] = None
     qr: Optional[str] = None
+    connected_phone: Optional[str] = None
 
 class WhatsAppStatusResponse(BaseModel):
     status: str
     reason: Optional[str] = None
     qr: Optional[str] = None
     qr_updated_at: Optional[datetime] = None
+    connected_phone: Optional[str] = None
+    bridge_reachable: bool = False
+    bridge_status: Optional[str] = None
+    bridge_detail: Optional[str] = None
+    last_event_at: Optional[datetime] = None
 
 class IncomingWhatsAppMessage(BaseModel):
     message_id: Optional[str] = None
     group_id: Optional[str] = None
     group_name: Optional[str] = None
+    chat_type: Optional[str] = None
     sender: str
     sender_name: Optional[str] = None
     text: str
     timestamp: Optional[int] = None
+    raw_payload: Optional[dict] = None
 
 class LiveFeedMessage(BaseModel):
     id: int
     chat_id: int
     chat_name: str
     sender: str
+    sender_id: Optional[str] = None
+    sender_name: Optional[str] = None
     message: str
+    external_message_id: Optional[str] = None
+    source: Optional[str] = None
     timestamp: Optional[datetime] = None
     risk_score: Optional[float] = None
     label: Optional[str] = None
 
 class LiveFeedResponse(BaseModel):
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
     messages: List[LiveFeedMessage]
 
 class WhatsAppChatSummary(BaseModel):
     id: int
     chat_name: str
     platform: str
+    external_chat_id: Optional[str] = None
+    chat_type: Optional[str] = None
+    is_live: bool = True
     message_count: int
     flagged_messages: int
+    alert_count: int = 0
+    open_alert_count: int = 0
+    acknowledged_alert_count: int = 0
+    resolved_alert_count: int = 0
     unsafe_percentage: float
     last_message_at: Optional[datetime] = None
+    latest_message_preview: Optional[str] = None
 
 class WhatsAppChatListResponse(BaseModel):
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
     chats: List[WhatsAppChatSummary]
+
+
+class WhatsAppChatSummaryAggregateResponse(BaseModel):
+    total_chats: int = 0
+    total_messages: int = 0
+    flagged_chats: int = 0
+    by_chat_type: dict[str, int] = {}
+    by_risk_state: dict[str, int] = {}
+    latest_message_at: Optional[datetime] = None
+
 
 class WhatsAppBridgeHealthResponse(BaseModel):
     reachable: bool
     status: Optional[str] = None
     detail: Optional[str] = None
+
+
+class WhatsAppBridgeEventResponse(BaseModel):
+    id: int
+    event_type: str
+    status: Optional[str] = None
+    detail: Optional[str] = None
+    connected_phone: Optional[str] = None
+    bridge_reachable: Optional[bool] = None
+    created_at: datetime
+
+
+class WhatsAppBridgeEventListResponse(BaseModel):
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    events: List[WhatsAppBridgeEventResponse]
+
+
+class WhatsAppBridgeEventSummaryResponse(BaseModel):
+    total_events: int = 0
+    by_type: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    latest_event_at: Optional[datetime] = None
+
+
+class WhatsAppBridgeStateSnapshotResponse(BaseModel):
+    id: int
+    status: Optional[str] = None
+    reason: Optional[str] = None
+    connected_phone: Optional[str] = None
+    bridge_status: Optional[str] = None
+    bridge_detail: Optional[str] = None
+    bridge_reachable: Optional[bool] = None
+    qr_present: bool = False
+    created_at: datetime
+
+
+class WhatsAppBridgeStateSnapshotListResponse(BaseModel):
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    snapshots: List[WhatsAppBridgeStateSnapshotResponse]
+
+
+class WhatsAppBridgeStateSnapshotSummaryResponse(BaseModel):
+    total_snapshots: int = 0
+    by_status: dict[str, int] = {}
+    by_bridge_status: dict[str, int] = {}
+    latest_snapshot_at: Optional[datetime] = None
+
+
+class WhatsAppBridgeOpsSummaryResponse(BaseModel):
+    current_state: WhatsAppStatusResponse
+    latest_event: Optional[WhatsAppBridgeEventResponse] = None
+    latest_snapshot: Optional[WhatsAppBridgeStateSnapshotResponse] = None
+    recent_event_count: int = 0
+    recent_snapshot_count: int = 0
+    recent_window_hours: int = 24
+    bridge_reachable: bool = False
+    attention_required: bool = False
+
+
+class LiveAlertResponse(BaseModel):
+    id: int
+    message_id: int
+    chat_id: int
+    chat_name: str
+    alert_type: str
+    severity: str
+    status: str
+    notes: Optional[str] = None
+    acknowledged_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    created_at: datetime
+    sender: str
+    message: str
+    risk_score: Optional[float] = None
+    label: Optional[str] = None
+    timestamp: Optional[datetime] = None
+
+
+class LiveAlertListResponse(BaseModel):
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    alerts: List[LiveAlertResponse]
+
+
+class LiveAlertSummaryResponse(BaseModel):
+    total_alerts: int = 0
+    by_severity: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    latest_alert_at: Optional[datetime] = None
+
+
+class AlertUpdateRequest(BaseModel):
+    status: str
+    notes: Optional[str] = None
+
+
+class WhatsAppLiveSummaryResponse(BaseModel):
+    bridge_status: str
+    bridge_reachable: bool
+    connected_phone: Optional[str] = None
+    total_live_chats: int
+    total_live_messages: int
+    flagged_live_messages: int
+    total_alerts: int
+    open_alerts: int = 0
+    acknowledged_alerts: int = 0
+    resolved_alerts: int = 0
+    safe_ratio: float
+    last_message_at: Optional[datetime] = None
+
+
+class WhatsAppLiveOpsSummaryResponse(BaseModel):
+    live_summary: WhatsAppLiveSummaryResponse
+    recent_feed_count: int = 0
+    recent_alert_count: int = 0
+    recent_flagged_message_count: int = 0
+    flagged_chat_count: int = 0
+    high_risk_chat_count: int = 0
+    recent_window_hours: int = 24
+    attention_required: bool = False
 
 class AnalysisResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -84,7 +245,11 @@ class AnalysisResultResponse(BaseModel):
 class MessageBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     sender: str
+    sender_id: Optional[str] = None
+    sender_name: Optional[str] = None
     message: str
+    external_message_id: Optional[str] = None
+    source: Optional[str] = None
     timestamp: Optional[datetime] = None
     risk_score: Optional[float] = None
     label: Optional[str] = None
@@ -95,6 +260,25 @@ class ChatDetailResponse(BaseModel):
     platform: str
     chat_name: str
     analysis_results: Optional[AnalysisResultResponse] = None
+    messages: List[MessageBase] = []
+
+
+class LiveChatDetailResponse(BaseModel):
+    id: int
+    platform: str
+    chat_name: str
+    external_chat_id: Optional[str] = None
+    chat_type: Optional[str] = None
+    is_live: bool = True
+    last_message_at: Optional[datetime] = None
+    analysis_results: Optional[AnalysisResultResponse] = None
+    total_messages: int = 0
+    alert_count: int = 0
+    open_alert_count: int = 0
+    acknowledged_alert_count: int = 0
+    resolved_alert_count: int = 0
+    limit: int = 0
+    offset: int = 0
     messages: List[MessageBase] = []
 
 class UserCreate(BaseModel):

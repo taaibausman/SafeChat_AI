@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,11 +15,25 @@ from backend.api.image_analyzer import router as image_router
 from backend.api.realtime import router as realtime_router
 from backend.api.whatsapp import router as whatsapp_router
 from backend.ai.engine import ai_engine
-from backend.database.config import engine, Base
+from backend.database.config import engine, Base, ensure_schema
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    ensure_schema()
+    # Schedule model loading in background so startup isn't blocked.
+    try:
+        asyncio.create_task(asyncio.to_thread(ai_engine._load_models))
+    except Exception:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, ai_engine._load_models)
+    yield
 
 app = FastAPI(
     title="SafeChat AI API",
     description="API for SafeChat AI chat analysis and OCR image analysis.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -33,18 +48,6 @@ app.include_router(chat_router, prefix="/api/analyze", tags=["analyze"])
 app.include_router(image_router, prefix="/api/image", tags=["image"])
 app.include_router(whatsapp_router, prefix="/api/whatsapp", tags=["whatsapp"])
 app.include_router(realtime_router, tags=["realtime"])
-
-
-@app.on_event("startup")
-async def on_startup():
-    Base.metadata.create_all(bind=engine)
-    # Schedule model loading in background so startup isn't blocked
-    try:
-        asyncio.create_task(asyncio.to_thread(ai_engine._load_models))
-    except Exception:
-        # Fallback: fire-and-forget using loop
-        loop = asyncio.get_event_loop()
-        loop.run_in_executor(None, ai_engine._load_models)
 
 
 if __name__ == "__main__":
