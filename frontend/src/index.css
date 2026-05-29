@@ -16,6 +16,48 @@
   }
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
-  @apply bg-slate-900 text-slate-50 min-h-screen font-sans;
+  @apply min-h-screen bg-slate-950 font-sans text-slate-50 antialiased;
+  background-image:
+    radial-gradient(circle at top, rgba(76, 29, 149, 0.18), transparent 30%),
+    radial-gradient(circle at bottom right, rgba(8, 145, 178, 0.12), transparent 22%);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.28);
+  color: white;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.45);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+a,
+button {
+  -webkit-tap-highlight-color: transparent;
 }

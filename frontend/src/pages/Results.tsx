@@ -1,8 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import axios from 'axios';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
-import { ShieldAlert, ShieldCheck, ArrowLeft, AlertTriangle } from 'lucide-react';
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Clock3,
+  MessageSquareWarning,
+  ShieldAlert,
+  ShieldCheck,
+} from 'lucide-react';
+import { apiClient } from '../lib/api';
 
 export default function Results() {
   const { id } = useParams<{ id: string }>();
@@ -13,10 +20,16 @@ export default function Results() {
   useEffect(() => {
     const fetchReport = async () => {
       try {
-        const response = await axios.get(`http://localhost:8000/api/analyze/report/${id}`);
+        const response = await apiClient.get(`/api/analyze/report/${id}`);
         setData(response.data);
       } catch (err: any) {
-        setError('Failed to load analysis report.');
+        if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+          setError('Request timed out while fetching the report. Try again.');
+        } else if (err.response) {
+          setError(err.response.data?.detail || `Server error: ${err.response.status}`);
+        } else {
+          setError('Failed to load analysis report.');
+        }
       } finally {
         setLoading(false);
       }
@@ -24,98 +37,229 @@ export default function Results() {
     fetchReport();
   }, [id]);
 
+  const derived = useMemo(() => {
+    if (!data) return null;
+    const analysis = data.analysis_results;
+    const flaggedMessages = data.messages.filter((m: any) => (m.risk_score ?? 0) > 50);
+    const highRisk = (analysis?.unsafe_percentage ?? 0) > 20;
+    const pieData = [
+      { name: 'Safe', value: analysis?.safe_percentage || 0, color: '#10b981' },
+      { name: 'Unsafe', value: analysis?.unsafe_percentage || 0, color: '#ef4444' },
+    ];
+    return { analysis, flaggedMessages, highRisk, pieData };
+  }, [data]);
+
   if (loading) {
-    return <div className="p-8 text-center text-slate-400">Loading analysis results...</div>;
-  }
-
-  if (error || !data) {
-    return <div className="p-8 text-center text-red-500">{error}</div>;
-  }
-
-  const analysis = data.analysis_results;
-  
-  const pieData = [
-    { name: 'Safe', value: analysis?.safe_percentage || 0, color: '#10b981' },
-    { name: 'Unsafe', value: analysis?.unsafe_percentage || 0, color: '#ef4444' }
-  ];
-
-  return (
-    <div className="p-8 max-w-6xl mx-auto animate-fade-in-up">
-      <Link to="/export-analyzer" className="flex items-center gap-2 text-slate-400 hover:text-white mb-6 transition-colors w-max">
-        <ArrowLeft className="w-4 h-4" /> Back to Analyzer
-      </Link>
-
-      <div className="flex justify-between items-end mb-8">
-        <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Analysis Report</h1>
-          <p className="text-slate-400">Chat Name: {data.chat_name}</p>
-        </div>
-        <div className={`px-6 py-3 rounded-full flex items-center gap-3 font-bold text-lg ${analysis?.unsafe_percentage > 20 ? 'bg-red-900/40 text-red-400 border border-red-800' : 'bg-green-900/40 text-green-400 border border-green-800'}`}>
-          {analysis?.unsafe_percentage > 20 ? <ShieldAlert className="w-6 h-6" /> : <ShieldCheck className="w-6 h-6" />}
-          {analysis?.unsafe_percentage > 20 ? 'High Risk Detected' : 'Generally Safe'}
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
+        <div className="rounded-[28px] border border-white/8 bg-slate-900/70 p-8 text-center text-slate-400 shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
+          Loading analysis results...
         </div>
       </div>
+    );
+  }
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg">
-          <h3 className="text-lg font-medium text-slate-300 mb-4">Overall Safety Ratio</h3>
-          <div className="h-48">
+  if (error || !data || !derived) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
+        <div className="rounded-[28px] border border-rose-500/20 bg-rose-500/8 p-8 text-center shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
+          <p className="text-rose-300">{error}</p>
+          <div className="mt-4">
+            <button
+              onClick={() => {
+                setLoading(true);
+                setError('');
+                setData(null);
+              }}
+              className="rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:brightness-110"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const { analysis, flaggedMessages, highRisk, pieData } = derived;
+
+  return (
+    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
+      <div className="flex flex-wrap items-center gap-3">
+        <Link
+          to="/analyze"
+          className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-4 py-2 text-sm text-slate-300 transition hover:bg-white/[0.06] hover:text-white"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to analyzer
+        </Link>
+      </div>
+
+      <section className="overflow-hidden rounded-[28px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-6 shadow-[0_30px_120px_rgba(59,130,246,0.15)] md:p-8">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl">
+            <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">ANALYSIS REPORT</p>
+            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-5xl">{data.chat_name}</h1>
+            <p className="mt-4 text-sm leading-7 text-slate-400 md:text-base">{analysis?.summary}</p>
+          </div>
+
+          <div className={`inline-flex items-center gap-3 rounded-full border px-5 py-3 text-sm font-semibold ${highRisk ? 'border-rose-500/25 bg-rose-500/10 text-rose-300' : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'}`}>
+            {highRisk ? <ShieldAlert className="h-5 w-5" /> : <ShieldCheck className="h-5 w-5" />}
+            {highRisk ? 'High risk detected' : 'Generally safe'}
+          </div>
+        </div>
+      </section>
+
+      <div className="grid gap-6 xl:grid-cols-[0.88fr_1.12fr]">
+        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+          <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">OVERVIEW</p>
+          <h2 className="mt-2 text-2xl font-semibold text-white">Safety ratio</h2>
+
+          <div className="mt-6 h-60">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie
-                  data={pieData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={80}
-                  paddingAngle={5}
-                  dataKey="value"
-                >
+                <Pie data={pieData} cx="50%" cy="50%" innerRadius={72} outerRadius={92} paddingAngle={4} dataKey="value">
                   {pieData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.color} />
                   ))}
                 </Pie>
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#fff' }}
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '16px', color: '#fff' }}
                   itemStyle={{ color: '#fff' }}
                 />
               </PieChart>
             </ResponsiveContainer>
           </div>
-          <div className="flex justify-center gap-6 mt-2">
-            <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-green-500"></div><span className="text-sm">Safe ({analysis?.safe_percentage?.toFixed(1)}%)</span></div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-red-500"></div><span className="text-sm">Unsafe ({analysis?.unsafe_percentage?.toFixed(1)}%)</span></div>
+
+          <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:justify-center">
+            <div className="flex items-center gap-2 text-sm text-slate-300">
+              <div className="h-3 w-3 rounded-full bg-emerald-500" />
+              Safe ({analysis?.safe_percentage?.toFixed(1)}%)
+            </div>
+            <div className="flex items-center gap-2 text-sm text-slate-300">
+              <div className="h-3 w-3 rounded-full bg-rose-500" />
+              Unsafe ({analysis?.unsafe_percentage?.toFixed(1)}%)
+            </div>
+          </div>
+
+          <div className="mt-6 grid gap-4 sm:grid-cols-3">
+            <div className="rounded-[20px] border border-white/8 bg-slate-950/60 p-4">
+              <p className="text-sm text-slate-400">Messages analyzed</p>
+              <p className="mt-3 text-2xl font-semibold text-white">{data.messages.length}</p>
+            </div>
+            <div className="rounded-[20px] border border-white/8 bg-slate-950/60 p-4">
+              <p className="text-sm text-slate-400">Flagged messages</p>
+              <p className="mt-3 text-2xl font-semibold text-rose-400">{flaggedMessages.length}</p>
+            </div>
+            <div className="rounded-[20px] border border-white/8 bg-slate-950/60 p-4">
+              <p className="text-sm text-slate-400">Average score</p>
+              <p className="mt-3 text-2xl font-semibold text-white">{analysis?.overall_score?.toFixed(1) ?? '0.0'}</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+          <div className="flex items-center gap-3">
+            <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+              <AlertTriangle className="h-5 w-5 text-amber-300" />
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">FLAGGED CONTENT</p>
+              <h2 className="mt-1 text-2xl font-semibold text-white">Dangerous messages</h2>
+            </div>
+          </div>
+
+          <div className="mt-5 space-y-3">
+            {flaggedMessages.slice(0, 24).map((msg: any, i: number) => (
+              <div key={i} className="rounded-[22px] border border-rose-500/18 bg-rose-500/[0.05] p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="font-semibold text-slate-100">{msg.sender}</p>
+                    {msg.timestamp && (
+                      <div className="mt-1 flex items-center gap-1 text-xs text-slate-400">
+                        <Clock3 className="h-3.5 w-3.5" />
+                        <span>{new Date(msg.timestamp).toLocaleString()}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="rounded-full border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 font-medium text-rose-300">
+                      Risk {msg.risk_score.toFixed(1)}
+                    </span>
+                    {msg.label && (
+                      <span className="rounded-full border border-white/8 bg-white/[0.04] px-3 py-1.5 font-medium text-slate-200">
+                        {msg.label}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <p className="mt-3 text-sm leading-7 text-slate-100">{msg.message}</p>
+              </div>
+            ))}
+            {flaggedMessages.length === 0 && (
+              <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-slate-400">
+                No dangerous messages detected.
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+              <MessageSquareWarning className="h-5 w-5 text-cyan-300" />
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">MESSAGE LOG</p>
+              <h2 className="mt-1 text-2xl font-semibold text-white">Dense moderation review</h2>
+            </div>
+          </div>
+          <div className="rounded-full border border-white/8 bg-white/[0.03] px-4 py-2 text-sm text-slate-300">
+            Showing {Math.min(data.messages.length, 100)} of {data.messages.length}
           </div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg md:col-span-2">
-          <h3 className="text-lg font-medium text-slate-300 mb-4">Summary</h3>
-          <p className="text-xl text-white mb-6 leading-relaxed">{analysis?.summary}</p>
-          
-          <h4 className="font-medium text-slate-400 mb-3 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-500" /> Dangerous Messages Detected
-          </h4>
-          <div className="space-y-3 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
-            {data.messages.filter((m: any) => m.risk_score > 50).slice(0, 50).map((msg: any, i: number) => (
-              <div key={i} className="bg-slate-800 p-3 rounded-lg border border-red-900/30 border-l-4 border-l-red-500">
-                <div className="flex justify-between mb-1">
-                  <span className="font-bold text-slate-300 text-sm">{msg.sender}</span>
-                  <span className="text-xs text-red-400 font-medium">Risk Score: {msg.risk_score.toFixed(1)}</span>
-                </div>
-                <p className="text-sm text-slate-100">{msg.message}</p>
-                {msg.label && (
-                  <span className="inline-block mt-2 px-2 py-0.5 rounded text-xs font-medium bg-red-900/50 text-red-300">
-                    {msg.label}
-                  </span>
-                )}
-              </div>
-            ))}
-            {data.messages.filter((m: any) => m.risk_score > 50).length === 0 && (
-              <p className="text-slate-500 italic">No dangerous messages detected.</p>
-            )}
+        <div className="mt-5 overflow-hidden rounded-[22px] border border-white/8 bg-slate-950/55">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-sm">
+              <thead className="border-b border-white/8 bg-white/[0.03] text-xs uppercase tracking-[0.16em] text-slate-500">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Sender</th>
+                  <th className="px-4 py-3 font-medium">Timestamp</th>
+                  <th className="px-4 py-3 font-medium">Message</th>
+                  <th className="px-4 py-3 font-medium">Label</th>
+                  <th className="px-4 py-3 font-medium text-right">Risk</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/6">
+                {data.messages.slice(0, 100).map((msg: any, i: number) => (
+                  <tr key={i} className="align-top transition hover:bg-white/[0.025]">
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-slate-200">{msg.sender}</div>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-400">
+                      {msg.timestamp ? new Date(msg.timestamp).toLocaleString() : '—'}
+                    </td>
+                    <td className="max-w-[28rem] px-4 py-3 text-slate-100">
+                      <div className="line-clamp-3 leading-6">{msg.message}</div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex rounded-full px-3 py-1.5 text-xs font-medium ${((msg.risk_score ?? 0) > 50) ? 'border border-rose-500/20 bg-rose-500/10 text-rose-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
+                        {msg.label ?? 'Safe'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm font-medium text-slate-300">
+                      {(msg.risk_score ?? 0).toFixed(1)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

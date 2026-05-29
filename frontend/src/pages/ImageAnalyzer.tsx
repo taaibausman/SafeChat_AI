@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Image as ImageIcon, AlertTriangle, ScanLine } from 'lucide-react';
-import axios from 'axios';
+import { AlertTriangle, Image as ImageIcon, ScanLine, Shield, View } from 'lucide-react';
+import { apiClient } from '../lib/api';
 
 export default function ImageAnalyzer() {
   const navigate = useNavigate();
@@ -14,7 +14,7 @@ export default function ImageAnalyzer() {
     if (e.target.files && e.target.files[0]) {
       const selectedFile = e.target.files[0];
       if (!selectedFile.type.startsWith('image/')) {
-        setError('Please upload a valid image file (JPG, PNG).');
+        setError('Please upload a valid image file (JPG, PNG, WEBP).');
         return;
       }
       setFile(selectedFile);
@@ -33,12 +33,12 @@ export default function ImageAnalyzer() {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('http://localhost:8000/api/image/upload', formData, {
+      const response = await apiClient.post(`/api/image/upload`, formData, {
         headers: {
-          'Content-Type': 'multipart/form-data'
-        }
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 60000,
       });
-      // Navigate straight to the results dashboard
       navigate(`/results/${response.data.chat_id}`);
     } catch (err: any) {
       setError(err.response?.data?.detail || 'An error occurred during OCR analysis.');
@@ -48,54 +48,125 @@ export default function ImageAnalyzer() {
   };
 
   return (
-    <div className="p-8 max-w-5xl mx-auto animate-fade-in-up">
-      <h1 className="text-3xl font-bold mb-2 text-white">Image OCR Analyzer</h1>
-      <p className="text-slate-400 mb-8">Upload a screenshot of a chat to extract and analyze the text for safety.</p>
+    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
+      <section className="overflow-hidden rounded-[28px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-6 shadow-[0_30px_120px_rgba(59,130,246,0.15)] md:p-8">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl">
+            <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">IMAGE ANALYZER</p>
+            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-5xl">Screenshot OCR review</h1>
+            <p className="mt-4 text-sm leading-7 text-slate-400 md:text-base">
+              Upload a chat screenshot and extract the text for the same moderation pipeline used by export analysis.
+            </p>
+          </div>
 
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 mb-8 shadow-xl">
-        <div 
-          className="border-2 border-dashed border-slate-700 rounded-xl p-12 flex flex-col items-center justify-center text-center hover:border-primary/50 transition-colors cursor-pointer bg-slate-800/50"
-          onClick={() => document.getElementById('image-upload')?.click()}
-        >
-          <ScanLine className="w-12 h-12 text-slate-400 mb-4" />
-          <h3 className="text-xl font-semibold mb-2">Drag & Drop or Click to Upload Image</h3>
-          <p className="text-slate-400 text-sm">Supported formats: JPG, PNG, WEBP</p>
-          <input 
-            type="file" 
-            id="image-upload" 
-            className="hidden" 
-            accept="image/*" 
-            onChange={handleFileChange}
-          />
+          <div className="grid gap-3 sm:grid-cols-3 lg:w-[30rem]">
+            {[
+              ['Input', 'Chat image'],
+              ['Output', 'OCR + report'],
+              ['Formats', 'JPG, PNG, WEBP'],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</p>
+                <p className="mt-2 text-sm font-medium text-white">{value}</p>
+              </div>
+            ))}
+          </div>
         </div>
+      </section>
 
-        {previewUrl && (
-          <div className="mt-8 flex flex-col items-center">
-            <h4 className="text-slate-300 mb-4 font-medium self-start">Image Preview:</h4>
-            <div className="relative rounded-lg overflow-hidden border border-slate-700 max-w-md w-full mb-6">
-              <img src={previewUrl} alt="Preview" className="w-full h-auto object-cover" />
+      <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+          <div
+            className="cursor-pointer rounded-[24px] border-2 border-dashed border-white/10 bg-slate-950/55 p-8 text-center transition hover:border-cyan-500/35 hover:bg-slate-950/70 sm:p-12"
+            onClick={() => document.getElementById('image-upload')?.click()}
+          >
+            <div className="mx-auto inline-flex rounded-3xl border border-cyan-500/20 bg-cyan-500/10 p-4">
+              <ScanLine className="h-10 w-10 text-cyan-300" />
             </div>
-            
-            <button 
-              onClick={handleUpload}
-              disabled={isUploading}
-              className="bg-primary hover:bg-blue-600 text-white px-8 py-3 rounded-lg font-bold transition-colors disabled:opacity-50 flex items-center gap-3 w-full justify-center text-lg"
-            >
-              {isUploading ? (
-                <>Scanning & Analyzing...</>
-              ) : (
-                <><ImageIcon className="w-5 h-5" /> Run AI Analysis</>
-              )}
-            </button>
+            <h3 className="mt-6 text-2xl font-semibold text-white">Drop screenshot or click to upload</h3>
+            <p className="mt-3 text-sm leading-7 text-slate-400">
+              Use this when you only have a screenshot. The OCR extractor will pull text first, then forward it to the moderation engine.
+            </p>
+            <div className="mt-5 inline-flex rounded-full border border-white/8 bg-white/[0.03] px-4 py-2 text-xs text-slate-300">
+              Best for screenshots and shared chat images
+            </div>
+            <input type="file" id="image-upload" className="hidden" accept="image/*" onChange={handleFileChange} />
           </div>
-        )}
 
-        {error && (
-          <div className="mt-4 p-4 bg-red-900/20 border border-red-900 rounded-lg flex items-start gap-3 text-red-400">
-            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
-            <p>{error}</p>
+          {previewUrl && (
+            <div className="mt-5 rounded-[22px] border border-white/8 bg-slate-950/65 p-4">
+              <div className="mb-4 flex items-center gap-3">
+                <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+                  <View className="h-5 w-5 text-cyan-300" />
+                </div>
+                <div>
+                  <p className="font-medium text-white">Preview ready</p>
+                  <p className="text-xs text-slate-400">{file?.name}</p>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-[20px] border border-white/8 bg-slate-950">
+                <img src={previewUrl} alt="Preview" className="aspect-[4/5] w-full object-cover md:aspect-[16/10]" />
+              </div>
+
+              <button
+                onClick={handleUpload}
+                disabled={isUploading}
+                className="mt-4 inline-flex min-h-12 w-full items-center justify-center gap-3 rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <ImageIcon className="h-5 w-5" />
+                {isUploading ? 'Running OCR and analysis...' : 'Run OCR analysis'}
+              </button>
+            </div>
+          )}
+
+          {error && (
+            <div className="mt-5 rounded-[22px] border border-rose-500/20 bg-rose-500/8 p-4 text-rose-300">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                <p className="text-sm">{error}</p>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+          <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">PIPELINE</p>
+          <h2 className="mt-2 text-2xl font-semibold text-white">How screenshot analysis works</h2>
+
+          <div className="mt-6 space-y-4">
+            {[
+              {
+                icon: ScanLine,
+                title: 'Extract visible text',
+                text: 'OCR reads the screenshot and reconstructs the chat content before moderation begins.',
+              },
+              {
+                icon: Shield,
+                title: 'Run the same safety checks',
+                text: 'Extracted text is scored using the same moderation workflow as uploaded exports.',
+              },
+              {
+                icon: ImageIcon,
+                title: 'Open a full report',
+                text: 'The result is routed into the report view so you can inspect flagged lines and review context.',
+              },
+            ].map(({ icon: Icon, title, text }, index) => (
+              <div key={title} className="flex gap-4 rounded-[22px] border border-white/8 bg-slate-950/55 p-4">
+                <div className="flex flex-col items-center">
+                  <div className="inline-flex rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+                    <Icon className="h-5 w-5 text-cyan-300" />
+                  </div>
+                  {index < 2 && <div className="mt-3 h-full w-px bg-gradient-to-b from-cyan-500/35 to-transparent" />}
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">{title}</h3>
+                  <p className="mt-2 text-sm leading-7 text-slate-400">{text}</p>
+                </div>
+              </div>
+            ))}
           </div>
-        )}
+        </section>
       </div>
     </div>
   );

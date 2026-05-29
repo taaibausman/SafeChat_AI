@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
-from database.config import Base
+from backend.database.config import Base
 
 class User(Base):
     __tablename__ = "users"
@@ -10,7 +10,7 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     firebase_uid = Column(String, unique=True, index=True)
     name = Column(String, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     chats = relationship("Chat", back_populates="owner")
     monitored_contacts = relationship("MonitoredContact", back_populates="user")
@@ -22,7 +22,7 @@ class Chat(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     platform = Column(String)  # e.g., WhatsApp, Discord
     chat_name = Column(String)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     owner = relationship("User", back_populates="chats")
     messages = relationship("Message", back_populates="chat")
@@ -35,7 +35,7 @@ class Message(Base):
     chat_id = Column(Integer, ForeignKey("chats.id"))
     sender = Column(String)
     message = Column(String)
-    timestamp = Column(DateTime)
+    timestamp = Column(DateTime(timezone=True), nullable=True)
     risk_score = Column(Float, nullable=True)
     label = Column(String, nullable=True)  # Safe, Unsafe, Toxic, etc.
 
@@ -61,7 +61,7 @@ class Alert(Base):
     message_id = Column(Integer, ForeignKey("messages.id"))
     alert_type = Column(String)
     severity = Column(String)  # High, Medium, Low
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     message = relationship("Message", back_populates="alerts")
 

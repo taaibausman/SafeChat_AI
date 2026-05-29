@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, FileText, CheckCircle, AlertTriangle } from 'lucide-react';
-import axios from 'axios';
+import { AlertTriangle, CheckCircle2, FileText, MessageSquareText, Shield, Upload } from 'lucide-react';
+import { apiClient } from '../lib/api';
 
 export default function ExportAnalyzer() {
   const navigate = useNavigate();
@@ -31,85 +31,167 @@ export default function ExportAnalyzer() {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('http://localhost:8000/api/analyze/upload', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        }
+      const response = await apiClient.post(`/api/analyze/upload`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 60000,
       });
       setResults(response.data);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'An error occurred during analysis.');
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        setError('Analysis is taking longer than expected. Wait for model warmup, then retry.');
+      } else {
+        setError(err.response?.data?.detail || err.message || 'An error occurred during analysis.');
+      }
     } finally {
       setIsUploading(false);
     }
   };
 
   return (
-    <div className="p-8 max-w-5xl mx-auto">
-      <h1 className="text-3xl font-bold mb-2 text-white">WhatsApp Export Analyzer</h1>
-      <p className="text-slate-400 mb-8">Upload your exported WhatsApp chat (.txt) for AI safety analysis.</p>
+    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
+      <section className="overflow-hidden rounded-[28px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-6 shadow-[0_30px_120px_rgba(59,130,246,0.15)] md:p-8">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl">
+            <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">ANALYZE CHAT</p>
+            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-5xl">WhatsApp export review</h1>
+            <p className="mt-4 text-sm leading-7 text-slate-400 md:text-base">
+              Upload a WhatsApp `.txt` export and generate a structured moderation report with risk scores, flagged messages, and summary insights.
+            </p>
+          </div>
 
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 mb-8 shadow-xl">
-        <div 
-          className="border-2 border-dashed border-slate-700 rounded-xl p-12 flex flex-col items-center justify-center text-center hover:border-primary/50 transition-colors cursor-pointer bg-slate-800/50"
-          onClick={() => document.getElementById('file-upload')?.click()}
-        >
-          <Upload className="w-12 h-12 text-slate-400 mb-4" />
-          <h3 className="text-xl font-semibold mb-2">Drag & Drop or Click to Upload</h3>
-          <p className="text-slate-400 text-sm">Supported formats: .txt</p>
-          <input 
-            type="file" 
-            id="file-upload" 
-            className="hidden" 
-            accept=".txt" 
-            onChange={handleFileChange}
-          />
+          <div className="grid gap-3 sm:grid-cols-3 lg:w-[29rem]">
+            {[
+              ['Input', '.txt export'],
+              ['Output', 'Risk report'],
+              ['Mode', 'Offline scan'],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</p>
+                <p className="mt-2 text-sm font-medium text-white">{value}</p>
+              </div>
+            ))}
+          </div>
         </div>
+      </section>
 
-        {file && (
-          <div className="mt-6 p-4 bg-slate-800 rounded-lg flex items-center justify-between border border-slate-700">
-            <div className="flex items-center gap-3">
-              <FileText className="text-primary w-6 h-6" />
-              <div>
-                <p className="font-medium">{file.name}</p>
-                <p className="text-xs text-slate-400">{(file.size / 1024).toFixed(2)} KB</p>
+      <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+          <div
+            className="cursor-pointer rounded-[24px] border-2 border-dashed border-white/10 bg-slate-950/55 p-8 text-center transition hover:border-cyan-500/35 hover:bg-slate-950/70 sm:p-12"
+            onClick={() => document.getElementById('file-upload')?.click()}
+          >
+            <div className="mx-auto inline-flex rounded-3xl border border-cyan-500/20 bg-cyan-500/10 p-4">
+              <Upload className="h-10 w-10 text-cyan-300" />
+            </div>
+            <h3 className="mt-6 text-2xl font-semibold text-white">Drop export or click to upload</h3>
+            <p className="mt-3 text-sm leading-7 text-slate-400">
+              Use the raw WhatsApp text export. The analyzer will extract messages, score them, and generate a linked report.
+            </p>
+            <div className="mt-5 inline-flex rounded-full border border-white/8 bg-white/[0.03] px-4 py-2 text-xs text-slate-300">
+              Supported format: `.txt`
+            </div>
+            <input type="file" id="file-upload" className="hidden" accept=".txt" onChange={handleFileChange} />
+          </div>
+
+          {file && (
+            <div className="mt-5 rounded-[22px] border border-white/8 bg-slate-950/65 p-4">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+                    <FileText className="h-5 w-5 text-cyan-300" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-white">{file.name}</p>
+                    <p className="text-xs text-slate-400">{(file.size / 1024).toFixed(2)} KB</p>
+                  </div>
+                </div>
+                <button
+                  onClick={handleUpload}
+                  disabled={isUploading}
+                  className="inline-flex min-h-12 items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isUploading ? 'Analyzing export…' : 'Run analysis'}
+                </button>
               </div>
             </div>
-            <button 
-              onClick={handleUpload}
-              disabled={isUploading}
-              className="bg-primary hover:bg-blue-600 text-white px-6 py-2 rounded-lg font-medium transition-colors disabled:opacity-50"
-            >
-              {isUploading ? 'Analyzing...' : 'Analyze Chat'}
-            </button>
-          </div>
-        )}
+          )}
 
-        {error && (
-          <div className="mt-4 p-4 bg-red-900/20 border border-red-900 rounded-lg flex items-start gap-3 text-red-400">
-            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
-            <p>{error}</p>
+          {error && (
+            <div className="mt-5 rounded-[22px] border border-rose-500/20 bg-rose-500/8 p-4 text-rose-300">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                <div>
+                  <p className="text-sm">{error}</p>
+                  <button
+                    onClick={handleUpload}
+                    className="mt-3 rounded-xl border border-rose-400/20 bg-rose-500/10 px-4 py-2 text-sm text-white transition hover:bg-rose-500/20"
+                  >
+                    Retry
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {results && (
+            <div className="mt-5 rounded-[22px] border border-emerald-500/20 bg-emerald-500/8 p-5">
+              <div className="flex items-start gap-3">
+                <CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-emerald-300" />
+                <div className="min-w-0 flex-1">
+                  <h4 className="text-lg font-semibold text-white">Analysis complete</h4>
+                  <p className="mt-2 text-sm text-slate-300">{results.message}</p>
+                  <div className="mt-4 rounded-2xl border border-white/8 bg-slate-950/55 p-4 font-mono text-sm text-emerald-300">
+                    Chat ID: {results.chat_id}
+                  </div>
+                  <button
+                    onClick={() => navigate(`/results/${results.chat_id}`)}
+                    className="mt-4 inline-flex min-h-11 items-center justify-center rounded-2xl border border-white/8 bg-white/[0.04] px-5 py-3 text-sm font-medium text-white transition hover:bg-white/[0.08]"
+                  >
+                    Open full report
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+          <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">WORKFLOW</p>
+          <h2 className="mt-2 text-2xl font-semibold text-white">What happens after upload</h2>
+          <div className="mt-6 space-y-4">
+            {[
+              {
+                icon: MessageSquareText,
+                title: 'Parse the export',
+                text: 'The system extracts timestamps, senders, and message content from the chat file.',
+              },
+              {
+                icon: Shield,
+                title: 'Score harmful content',
+                text: 'Each message is evaluated for unsafe language patterns and aggregated into a report summary.',
+              },
+              {
+                icon: CheckCircle2,
+                title: 'Review the result',
+                text: 'Open the report page to inspect overall safety ratios, flagged messages, and recent conversation context.',
+              },
+            ].map(({ icon: Icon, title, text }, index) => (
+              <div key={title} className="flex gap-4 rounded-[22px] border border-white/8 bg-slate-950/55 p-4">
+                <div className="flex flex-col items-center">
+                  <div className="inline-flex rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+                    <Icon className="h-5 w-5 text-cyan-300" />
+                  </div>
+                  {index < 2 && <div className="mt-3 h-full w-px bg-gradient-to-b from-cyan-500/35 to-transparent" />}
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">{title}</h3>
+                  <p className="mt-2 text-sm leading-7 text-slate-400">{text}</p>
+                </div>
+              </div>
+            ))}
           </div>
-        )}
+        </section>
       </div>
-
-      {results && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-xl animate-fade-in-up">
-          <div className="flex items-center gap-3 mb-6">
-            <CheckCircle className="text-green-500 w-8 h-8" />
-            <h2 className="text-2xl font-bold">Analysis Complete</h2>
-          </div>
-          <p className="text-slate-300 mb-4">{results.message}</p>
-          <div className="p-4 bg-slate-800 rounded-lg border border-slate-700 font-mono text-sm text-green-400">
-            Chat ID generated: {results.chat_id}
-          </div>
-          <button 
-            onClick={() => navigate(`/results/${results.chat_id}`)}
-            className="mt-6 bg-slate-800 hover:bg-slate-700 text-white px-6 py-2 rounded-lg font-medium transition-colors border border-slate-700">
-            View Full Report
-          </button>
-        </div>
-      )}
     </div>
   );
 }

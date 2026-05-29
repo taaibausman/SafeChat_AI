@@ -1,19 +1,23 @@
 import os
+from datetime import datetime, timezone
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
-from database.config import get_db
-import models.domain as models
-import schemas.domain as schemas
-from ai.engine import ai_engine
+from backend.database.config import get_db
+import backend.models.domain as models
+import backend.schemas.domain as schemas
+from backend.ai.engine import ai_engine
+from backend.api.realtime import manager as realtime_manager
+import asyncio
 from PIL import Image
 import pytesseract
 import io
 
 router = APIRouter()
 
-# Note: pytesseract requires Tesseract-OCR to be installed on the system.
-# For Windows, you usually need to set the path if it's not in PATH:
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+DEFAULT_TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+if os.path.exists(DEFAULT_TESSERACT_PATH):
+    pytesseract.pytesseract.tesseract_cmd = DEFAULT_TESSERACT_PATH
 
 @router.post("/upload", response_model=schemas.ChatUploadResponse)
 async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -56,11 +60,32 @@ async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_d
         chat_id=new_chat.id,
         sender="Extracted_Text",
         message=extracted_text,
+        timestamp=datetime.now(timezone.utc),
         risk_score=score,
         label=label
     )
     db.add(db_msg)
-    
+    db.commit()
+    db.refresh(db_msg)
+
+    # Broadcast live message
+    try:
+        payload = {
+            "type": "message",
+            "payload": {
+                "id": db_msg.id,
+                "chat_id": new_chat.id,
+                "chat_name": new_chat.chat_name,
+                "sender": db_msg.sender,
+                "message": db_msg.message,
+                "timestamp": db_msg.timestamp.isoformat(),
+                "risk_score": db_msg.risk_score,
+                "label": db_msg.label,
+            }
+        }
+        asyncio.create_task(realtime_manager.broadcast(payload))
+    except Exception:
+        pass
     # Save overall AnalysisResult
     result = models.AnalysisResult(
         chat_id=new_chat.id,

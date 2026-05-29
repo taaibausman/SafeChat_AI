@@ -1,0 +1,14 @@
+{
+  "name": "safechat-whatsapp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.21",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

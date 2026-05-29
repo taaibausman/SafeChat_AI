@@ -1,0 +1,9 @@
+fastapi>=0.113.0
+uvicorn[standard]>=0.23.0
+sqlalchemy>=2.0.0
+pillow>=10.0.0
+pytesseract>=0.3.10
+transformers>=4.0.0
+detoxify>=0.2.0
+torch>=2.0.0
+python-multipart>=0.0.6
