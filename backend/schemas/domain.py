@@ -233,6 +233,14 @@ class WhatsAppLiveOpsSummaryResponse(BaseModel):
     recent_window_hours: int = 24
     attention_required: bool = False
 
+
+class WhatsAppBackendHealthResponse(BaseModel):
+    bridge_ops: WhatsAppBridgeOpsSummaryResponse
+    live_ops: WhatsAppLiveOpsSummaryResponse
+    recent_window_hours: int = 24
+    attention_required: bool = False
+    status: str = "healthy"
+
 class AnalysisResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

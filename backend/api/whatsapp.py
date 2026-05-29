@@ -1452,3 +1452,21 @@ def get_live_ops_summary(
         recent_window_hours=recent_window_hours,
         attention_required=attention_required,
     )
+
+
+@router.get("/health-summary", response_model=schemas.WhatsAppBackendHealthResponse)
+def get_backend_health_summary(
+    recent_window_hours: int = Query(default=24, ge=1, le=168),
+    db: Session = Depends(get_db),
+):
+    bridge_ops = get_bridge_ops_summary(recent_window_hours=recent_window_hours, db=db)
+    live_ops = get_live_ops_summary(recent_window_hours=recent_window_hours, db=db)
+    attention_required = bridge_ops.attention_required or live_ops.attention_required
+    status = "attention" if attention_required else "healthy"
+    return schemas.WhatsAppBackendHealthResponse(
+        bridge_ops=bridge_ops,
+        live_ops=live_ops,
+        recent_window_hours=recent_window_hours,
+        attention_required=attention_required,
+        status=status,
+    )

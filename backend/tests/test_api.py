@@ -666,6 +666,15 @@ def test_whatsapp_summary_route():
     assert ops_summary["high_risk_chat_count"] >= 0
     assert ops_summary["recent_window_hours"] == 24
 
+    health_summary_resp = client.get("/api/whatsapp/health-summary")
+    assert health_summary_resp.status_code == 200
+    health_summary = health_summary_resp.json()
+    assert health_summary["bridge_ops"]["recent_window_hours"] == 24
+    assert health_summary["live_ops"]["recent_window_hours"] == 24
+    assert health_summary["recent_window_hours"] == 24
+    assert health_summary["status"] in {"healthy", "attention"}
+    assert health_summary["attention_required"] in {True, False}
+
 
 def test_whatsapp_paginated_feed_and_chat_filters():
     feed_resp = client.get("/api/whatsapp/live-feed?limit=1&offset=0&flagged_only=false")
