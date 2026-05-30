@@ -293,3 +293,63 @@ class UserCreate(BaseModel):
     email: str
     firebase_uid: str
     name: Optional[str] = None
+
+
+class UserRegisterRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+    name: Optional[str] = None
+    role: Optional[str] = "user"
+
+
+class UserLoginRequest(BaseModel):
+    email_or_username: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    username: Optional[str] = None
+    email: str
+    role: str = "user"
+    is_active: bool = True
+    name: Optional[str] = None
+    created_at: datetime
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+
+class ModerationLogResponse(BaseModel):
+    id: int
+    message_id: int
+    chat_id: int
+    chat_name: str
+    sender: str
+    message: str
+    toxic: float = 0.0
+    severe_toxic: float = 0.0
+    obscene: float = 0.0
+    threat: float = 0.0
+    insult: float = 0.0
+    identity_hate: float = 0.0
+    action: str
+    reviewed_by: Optional[int] = None
+    reviewed_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class ModerationLogListResponse(BaseModel):
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    logs: List[ModerationLogResponse]
+
+
+class ModerationLogUpdateRequest(BaseModel):
+    action: str

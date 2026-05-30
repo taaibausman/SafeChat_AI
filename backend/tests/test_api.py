@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from PIL import Image
 from urllib.parse import quote
 from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
 
 client = TestClient(app)
 
@@ -20,6 +21,24 @@ def setup_module(module):
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     run_migrations(engine)
+
+
+def register_user(username: str, email: str, password: str, role: str = "user"):
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "username": username,
+            "email": email,
+            "password": password,
+            "role": role,
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def auth_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_upload_chat_and_get_report():
@@ -785,3 +804,136 @@ def test_whatsapp_paginated_feed_and_chat_filters():
         older_detail = older_detail_resp.json()
         assert older_detail["total_messages"] == 0
         assert older_detail["messages"] == []
+
+
+def test_auth_register_login_and_protected_routes():
+    registered = register_user("integration-user", "integration@example.com", "secret123")
+    token = registered["access_token"]
+
+    me_resp = client.get("/api/users/me", headers=auth_headers(token))
+    assert me_resp.status_code == 200
+    me = me_resp.json()
+    assert me["email"] == "integration@example.com"
+    assert me["username"] == "integration-user"
+    assert me["role"] == "user"
+
+    login_resp = client.post(
+        "/api/auth/login",
+        json={"email_or_username": "integration@example.com", "password": "secret123"},
+    )
+    assert login_resp.status_code == 200
+    assert login_resp.json()["token_type"] == "bearer"
+
+    unauthorized_resp = client.get("/api/users/me")
+    assert unauthorized_resp.status_code == 401
+
+
+def test_live_whatsapp_monitoring_websocket_flow():
+    with client.websocket_connect("/ws/whatsapp") as websocket:
+        websocket.send_text("subscribe")
+
+        status_resp = client.post(
+            "/api/whatsapp/status",
+            json={
+                "status": "connected",
+                "reason": "websocket test",
+                "qr": None,
+                "connected_phone": "923001112223:1@s.whatsapp.net",
+            },
+        )
+        assert status_resp.status_code == 200
+        status_event = websocket.receive_json()
+        assert status_event["type"] == "status"
+        assert status_event["payload"]["status"] == "connected"
+
+        with patch("backend.api.whatsapp.ai_engine.analyze_message", return_value={"risk_score": 88.0, "label": "Threat"}):
+            incoming_resp = client.post(
+                "/api/whatsapp/messages/incoming",
+                json={
+                    "message_id": "ws-live-1",
+                    "group_id": "ws-group-1",
+                    "group_name": "Realtime Group",
+                    "chat_type": "group",
+                    "sender": "eve",
+                    "sender_name": "Eve",
+                    "text": "This websocket flow should be flagged.",
+                    "timestamp": 1780034900,
+                },
+            )
+        assert incoming_resp.status_code == 200
+
+        first_event = websocket.receive_json()
+        second_event = websocket.receive_json()
+        event_types = {first_event["type"], second_event["type"]}
+        assert event_types == {"message", "chat_updated"}
+
+        message_event = first_event if first_event["type"] == "message" else second_event
+        assert message_event["payload"]["chat_name"] == "Realtime Group"
+        assert message_event["payload"]["risk_score"] == 88.0
+
+
+def test_admin_dashboard_override_functionality():
+    admin = register_user("integration-admin", "admin@example.com", "secret123", role="admin")
+    admin_token = admin["access_token"]
+
+    with patch("backend.api.whatsapp.ai_engine.analyze_message", return_value={"risk_score": 95.0, "label": "Threat"}):
+        incoming_resp = client.post(
+            "/api/whatsapp/messages/incoming",
+            json={
+                "message_id": "override-log-1",
+                "group_id": "override-group",
+                "group_name": "Override Group",
+                "chat_type": "group",
+                "sender": "zoe",
+                "sender_name": "Zoe",
+                "text": "Override this moderation decision.",
+                "timestamp": 1780035900,
+            },
+        )
+    assert incoming_resp.status_code == 200
+
+    forbidden_resp = client.get("/api/moderation/logs")
+    assert forbidden_resp.status_code == 401
+
+    logs_resp = client.get("/api/moderation/logs", headers=auth_headers(admin_token))
+    assert logs_resp.status_code == 200
+    logs = logs_resp.json()["logs"]
+    assert logs
+    target_log = logs[0]
+
+    override_resp = client.patch(
+        f"/api/moderation/logs/{target_log['id']}",
+        json={"action": "allow"},
+        headers=auth_headers(admin_token),
+    )
+    assert override_resp.status_code == 200
+    updated = override_resp.json()
+    assert updated["action"] == "allow"
+    assert updated["reviewed_by"] == admin["user"]["id"]
+    assert updated["reviewed_at"] is not None
+
+    db = SessionLocal()
+    try:
+        alert = (
+            db.query(models.Alert)
+            .join(models.Message, models.Message.id == models.Alert.message_id)
+            .filter(models.Message.id == target_log["message_id"])
+            .first()
+        )
+        assert alert is not None
+        assert alert.status == "resolved"
+    finally:
+        db.close()
+
+
+def test_concurrent_summary_requests():
+    def fetch_status(_: int) -> int:
+        local_client = TestClient(app)
+        response = local_client.get("/api/whatsapp/summary")
+        return response.status_code
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        statuses = list(executor.map(fetch_status, range(10)))
+
+    assert statuses
+    assert all(status_code == 200 for status_code in statuses)
