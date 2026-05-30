@@ -10,6 +10,7 @@ from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from PIL import Image
 from urllib.parse import quote
+from unittest.mock import patch
 
 client = TestClient(app)
 
@@ -466,19 +467,20 @@ def test_whatsapp_direct_chat_naming_and_aggregate_updates():
 
 
 def test_whatsapp_alert_created_for_high_risk_message():
-    incoming_resp = client.post(
-        "/api/whatsapp/messages/incoming",
-        json={
-            "message_id": "alert-1",
-            "group_id": "group-alert",
-            "group_name": "Alert Group",
-            "chat_type": "group",
-            "sender": "bob",
-            "sender_name": "Bob",
-            "text": "This is a severe threat and you will regret it.",
-            "timestamp": 1780033800,
-        },
-    )
+    with patch("backend.api.whatsapp.ai_engine.analyze_message", return_value={"risk_score": 92.0, "label": "Threat"}):
+        incoming_resp = client.post(
+            "/api/whatsapp/messages/incoming",
+            json={
+                "message_id": "alert-1",
+                "group_id": "group-alert",
+                "group_name": "Alert Group",
+                "chat_type": "group",
+                "sender": "bob",
+                "sender_name": "Bob",
+                "text": "This is a severe threat and you will regret it.",
+                "timestamp": 1780033800,
+            },
+        )
     assert incoming_resp.status_code == 200
     message_id = incoming_resp.json()["message_id"]
 
@@ -493,35 +495,37 @@ def test_whatsapp_alert_created_for_high_risk_message():
 
 
 def test_whatsapp_alert_list_routes():
-    first_resp = client.post(
-        "/api/whatsapp/messages/incoming",
-        json={
-            "message_id": "alert-list-1",
-            "group_id": "group-alert-list",
-            "group_name": "Alert Feed",
-            "chat_type": "group",
-            "sender": "sam",
-            "sender_name": "Sam",
-            "text": "I will destroy you and make you regret this.",
-            "timestamp": 1780033900,
-        },
-    )
+    with patch("backend.api.whatsapp.ai_engine.analyze_message", return_value={"risk_score": 91.0, "label": "Threat"}):
+        first_resp = client.post(
+            "/api/whatsapp/messages/incoming",
+            json={
+                "message_id": "alert-list-1",
+                "group_id": "group-alert-list",
+                "group_name": "Alert Feed",
+                "chat_type": "group",
+                "sender": "sam",
+                "sender_name": "Sam",
+                "text": "I will destroy you and make you regret this.",
+                "timestamp": 1780033900,
+            },
+        )
     assert first_resp.status_code == 200
     chat_id = first_resp.json()["chat_id"]
 
-    second_resp = client.post(
-        "/api/whatsapp/messages/incoming",
-        json={
-            "message_id": "alert-list-2",
-            "group_id": "group-alert-list",
-            "group_name": "Alert Feed",
-            "chat_type": "group",
-            "sender": "sam",
-            "sender_name": "Sam",
-            "text": "This is another severe threat.",
-            "timestamp": 1780033960,
-        },
-    )
+    with patch("backend.api.whatsapp.ai_engine.analyze_message", return_value={"risk_score": 83.0, "label": "Threat"}):
+        second_resp = client.post(
+            "/api/whatsapp/messages/incoming",
+            json={
+                "message_id": "alert-list-2",
+                "group_id": "group-alert-list",
+                "group_name": "Alert Feed",
+                "chat_type": "group",
+                "sender": "sam",
+                "sender_name": "Sam",
+                "text": "This is another severe threat.",
+                "timestamp": 1780033960,
+            },
+        )
     assert second_resp.status_code == 200
 
     alerts_resp = client.get("/api/whatsapp/alerts")
