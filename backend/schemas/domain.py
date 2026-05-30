@@ -325,6 +325,63 @@ class LiveChatDetailResponse(BaseModel):
     offset: int = 0
     messages: List[MessageBase] = []
 
+
+class MessageSendRequest(BaseModel):
+    chat_id: Optional[int] = None
+    chat_name: Optional[str] = None
+    platform: str = "SafeChat_Direct"
+    content: str
+
+
+class MessageSendResponse(BaseModel):
+    chat_id: int
+    message_id: int
+    action: str
+    severity: str
+    blocked: bool = False
+    risk_score: float
+    label: str
+
+
+class MessageListResponse(BaseModel):
+    chat_id: int
+    chat_name: str
+    platform: str
+    total_messages: int = 0
+    messages: List[MessageBase] = []
+
+
+class ModerateTextRequest(BaseModel):
+    text: str
+    persist_result: bool = False
+    chat_name: Optional[str] = None
+
+
+class ModerateImageResponse(BaseModel):
+    chat_id: Optional[int] = None
+    message_id: Optional[int] = None
+    extracted_text: str
+    action: str
+    severity: str
+    risk_score: float
+    label: str
+    blocked: bool = False
+    saved: bool = True
+
+
+class ModerateTextResponse(BaseModel):
+    chat_id: Optional[int] = None
+    message_id: Optional[int] = None
+    text: str
+    action: str
+    severity: str
+    risk_score: float
+    label: str
+    blocked: bool = False
+    saved: bool = False
+    thresholds: dict[str, float] = {}
+    details: dict = {}
+
 class UserCreate(BaseModel):
     email: str
     firebase_uid: str

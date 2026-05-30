@@ -38,8 +38,9 @@ async def upload_chat(file: UploadFile = File(...), db: Session = Depends(get_db
         analysis = ai_engine.analyze_message(msg["message"])
         score = analysis["risk_score"]
         label = analysis["label"]
+        action = analysis.get("action") or ai_engine.action_for_score(score)
         
-        if score > 50:
+        if action in {"flag", "block"}:
             unsafe_count += 1
         total_score += score
             
@@ -51,7 +52,7 @@ async def upload_chat(file: UploadFile = File(...), db: Session = Depends(get_db
             timestamp=msg["timestamp"],
             risk_score=score,
             toxicity_score=score,
-            is_flagged=score > 50,
+            is_flagged=action in {"flag", "block"},
             label=label
         )
         db.add(db_msg)
@@ -68,7 +69,7 @@ async def upload_chat(file: UploadFile = File(...), db: Session = Depends(get_db
                 threat=toxicity_details.get("threat", 0.0),
                 insult=toxicity_details.get("insult", 0.0),
                 identity_hate=toxicity_details.get("identity_hate", 0.0),
-                action="flag" if score > 50 else "allow",
+                action=action,
             )
         )
         db.commit()

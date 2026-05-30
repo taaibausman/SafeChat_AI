@@ -13,6 +13,7 @@ if ROOT_DIR not in sys.path:
 from backend.api.chat_analyzer import router as chat_router
 from backend.api.auth import router as auth_router
 from backend.api.image_analyzer import router as image_router
+from backend.api.messages import router as messages_router
 from backend.api.moderation import router as moderation_router
 from backend.api.realtime import router as realtime_router
 from backend.api.users import router as users_router
@@ -51,7 +52,9 @@ app.add_middleware(
 app.include_router(chat_router, prefix="/api/analyze", tags=["analyze"])
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(image_router, prefix="/api/image", tags=["image"])
+app.include_router(messages_router, prefix="/api/messages", tags=["messages"])
 app.include_router(moderation_router, prefix="/api/moderation", tags=["moderation"])
+app.include_router(moderation_router, prefix="/api/moderate", tags=["moderate"])
 app.include_router(whatsapp_router, prefix="/api/whatsapp", tags=["whatsapp"])
 app.include_router(users_router, prefix="/api/users", tags=["users"])
 app.include_router(realtime_router, tags=["realtime"])

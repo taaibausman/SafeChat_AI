@@ -898,6 +898,8 @@ async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db:
         }
 
     analysis = ai_engine.analyze_message(payload.text)
+    action = analysis.get("action") or ai_engine.action_for_score(analysis["risk_score"])
+    severity = analysis.get("severity") or ai_engine.severity_for_score(analysis["risk_score"])
     message = models.Message(
         chat_id=chat.id,
         sender=payload.sender_name or payload.sender,
@@ -913,7 +915,7 @@ async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db:
         timestamp=_resolve_timestamp(payload.timestamp),
         risk_score=analysis["risk_score"],
         toxicity_score=analysis["risk_score"],
-        is_flagged=(analysis["risk_score"] or 0) > 50,
+        is_flagged=action in {"flag", "block"},
         label=analysis["label"],
     )
     db.add(message)
@@ -930,14 +932,20 @@ async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db:
             threat=toxicity_details.get("threat", 0.0),
             insult=toxicity_details.get("insult", 0.0),
             identity_hate=toxicity_details.get("identity_hate", 0.0),
-            action="flag" if (analysis["risk_score"] or 0) > 50 else "allow",
+            action=action,
         )
     )
     db.commit()
 
-    if (message.risk_score or 0) > 50:
-        severity = "High" if (message.risk_score or 0) >= 80 else "Medium"
-        db.add(models.Alert(message_id=message.id, alert_type=message.label or "Unsafe", severity=severity, status="open"))
+    if action in {"flag", "block"}:
+        db.add(
+            models.Alert(
+                message_id=message.id,
+                alert_type=message.label or "Unsafe",
+                severity=severity,
+                status="open",
+            )
+        )
         db.commit()
 
     result = _recompute_chat_metrics(db, chat)

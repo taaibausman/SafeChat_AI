@@ -1,3 +1,4 @@
+import io
 import os
 from datetime import datetime, timezone
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
@@ -9,8 +10,8 @@ from backend.ai.engine import ai_engine
 from backend.api.realtime import manager as realtime_manager
 import asyncio
 from PIL import Image
+from PIL import ImageEnhance
 import pytesseract
-import io
 
 router = APIRouter()
 
@@ -19,43 +20,47 @@ DEFAULT_TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 if os.path.exists(DEFAULT_TESSERACT_PATH):
     pytesseract.pytesseract.tesseract_cmd = DEFAULT_TESSERACT_PATH
 
-@router.post("/upload", response_model=schemas.ChatUploadResponse)
-async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Only image files are supported")
-        
-    content = await file.read()
+
+def extract_text_from_image_bytes(content: bytes) -> str:
     try:
         image = Image.open(io.BytesIO(content))
-        # Optional: set tesseract path if it fails here
-        try:
-            extracted_text = pytesseract.image_to_string(image)
-        except pytesseract.TesseractNotFoundError:
-            raise HTTPException(
-                status_code=500, 
-                detail="Tesseract OCR is not installed or not in PATH. Please install Tesseract-OCR."
-            )
-            
-        if not extracted_text.strip():
-            raise HTTPException(status_code=400, detail="Could not extract any text from the image")
-            
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=400, detail=f"Failed to process image: {str(e)}")
-        
-    # Analyze extracted text
-    analysis = ai_engine.analyze_message(extracted_text)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to process image: {str(exc)}") from exc
+
+    processed = ImageEnhance.Contrast(image.convert("L")).enhance(1.5)
+    if processed.width < 1200:
+        scale = 1200 / max(processed.width, 1)
+        processed = processed.resize((1200, max(int(processed.height * scale), 1)))
+
+    try:
+        extracted_text = pytesseract.image_to_string(processed)
+    except pytesseract.TesseractNotFoundError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Tesseract OCR is not installed or not in PATH. Please install Tesseract-OCR.",
+        ) from exc
+
+    if not extracted_text.strip():
+        raise HTTPException(status_code=400, detail="Could not extract any text from the image")
+    return extracted_text.strip()
+
+
+def persist_image_analysis(
+    *,
+    db: Session,
+    filename: str,
+    extracted_text: str,
+    analysis: dict,
+) -> tuple[models.Chat, models.Message]:
     score = analysis["risk_score"]
-    label = analysis["label"]
-    
-    # Save chat to DB
-    new_chat = models.Chat(platform="Image_OCR", chat_name=file.filename)
+    action = analysis.get("action") or ai_engine.action_for_score(score)
+    severity = analysis.get("severity") or ai_engine.severity_for_score(score)
+
+    new_chat = models.Chat(platform="Image_OCR", chat_name=filename)
     db.add(new_chat)
     db.commit()
     db.refresh(new_chat)
-    
-    # Save the extracted text as a single message
+
     db_msg = models.Message(
         chat_id=new_chat.id,
         sender="Extracted_Text",
@@ -64,8 +69,9 @@ async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_d
         timestamp=datetime.now(timezone.utc),
         risk_score=score,
         toxicity_score=score,
-        is_flagged=score > 50,
-        label=label
+        is_flagged=action in {"flag", "block"},
+        label=analysis["label"],
+        source="image_upload",
     )
     db.add(db_msg)
     db.commit()
@@ -81,19 +87,47 @@ async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_d
             threat=toxicity_details.get("threat", 0.0),
             insult=toxicity_details.get("insult", 0.0),
             identity_hate=toxicity_details.get("identity_hate", 0.0),
-            action="flag" if score > 50 else "allow",
+            action=action,
         )
     )
     db.add(
         models.ImageScan(
-            file_path=file.filename or "uploaded-image",
+            file_path=filename or "uploaded-image",
             ocr_text=extracted_text,
-            is_flagged=score > 50,
+            is_flagged=action in {"flag", "block"},
             toxicity_score=score,
             scan_time=datetime.now(timezone.utc),
         )
     )
+    if action in {"flag", "block"}:
+        db.add(
+            models.Alert(
+                message_id=db_msg.id,
+                alert_type=analysis["label"] or "Unsafe",
+                severity=severity,
+                status="open",
+            )
+        )
     db.commit()
+    return new_chat, db_msg
+
+@router.post("/upload", response_model=schemas.ChatUploadResponse)
+async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are supported")
+        
+    content = await file.read()
+    extracted_text = extract_text_from_image_bytes(content)
+        
+    # Analyze extracted text
+    analysis = ai_engine.analyze_message(extracted_text)
+    action = analysis.get("action") or ai_engine.action_for_score(analysis["risk_score"])
+    new_chat, db_msg = persist_image_analysis(
+        db=db,
+        filename=file.filename or "uploaded-image",
+        extracted_text=extracted_text,
+        analysis=analysis,
+    )
 
     # Broadcast live message
     try:
@@ -116,10 +150,10 @@ async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_d
     # Save overall AnalysisResult
     result = models.AnalysisResult(
         chat_id=new_chat.id,
-        overall_score=score,
-        safe_percentage=100.0 if score < 50 else 0.0,
-        unsafe_percentage=100.0 if score >= 50 else 0.0,
-        summary=f"Analyzed extracted text. Detected label: {label}"
+        overall_score=analysis["risk_score"],
+        safe_percentage=100.0 if action == "allow" else 0.0,
+        unsafe_percentage=0.0 if action == "allow" else 100.0,
+        summary=f"Analyzed extracted text. Detected label: {analysis['label']}"
     )
     db.add(result)
     db.commit()

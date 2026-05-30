@@ -13,6 +13,24 @@ class AIEngine:
         self.models_loading = False
         self._load_lock = threading.Lock()
         self.disable_models = bool(os.environ.get("SAFECHAT_DISABLE_MODELS", ""))
+        self.flag_threshold = float(os.environ.get("SAFECHAT_FLAG_THRESHOLD", "55"))
+        self.block_threshold = float(os.environ.get("SAFECHAT_BLOCK_THRESHOLD", "85"))
+
+    def action_for_score(self, score: float | int | None) -> str:
+        normalized = float(score or 0.0)
+        if normalized >= self.block_threshold:
+            return "block"
+        if normalized >= self.flag_threshold:
+            return "flag"
+        return "allow"
+
+    def severity_for_score(self, score: float | int | None) -> str:
+        normalized = float(score or 0.0)
+        if normalized >= self.block_threshold:
+            return "High"
+        if normalized >= self.flag_threshold:
+            return "Medium"
+        return "Low"
         
     def _load_models(self):
         if self.models_loaded or self.disable_models:
@@ -64,10 +82,30 @@ class AIEngine:
     def analyze_message(self, text: str) -> dict:
         # If models are disabled via env, return a fast safe default
         if getattr(self, 'disable_models', False):
-            return {"risk_score": 0.0, "label": "Safe", "details": {"note": "models_disabled"}}
+            return {
+                "risk_score": 0.0,
+                "label": "Safe",
+                "action": "allow",
+                "severity": "Low",
+                "thresholds": {
+                    "flag": self.flag_threshold,
+                    "block": self.block_threshold,
+                },
+                "details": {"note": "models_disabled"},
+            }
         # Do not block waiting for models; use available models or fallbacks.
         if not text.strip():
-            return {"risk_score": 0, "label": "Safe", "details": {}}
+            return {
+                "risk_score": 0,
+                "label": "Safe",
+                "action": "allow",
+                "severity": "Low",
+                "thresholds": {
+                    "flag": self.flag_threshold,
+                    "block": self.block_threshold,
+                },
+                "details": {},
+            }
             
         # 1. Custom Binary Model
         binary_score = 0
@@ -119,9 +157,18 @@ class AIEngine:
         else:
             final_label = "Safe"
             
+        action = self.action_for_score(final_score)
+        severity = self.severity_for_score(final_score)
+
         return {
             "risk_score": final_score,
             "label": final_label,
+            "action": action,
+            "severity": severity,
+            "thresholds": {
+                "flag": self.flag_threshold,
+                "block": self.block_threshold,
+            },
             "details": {
                 "binary_score": binary_score,
                 "toxicity": tox_results

@@ -1,11 +1,13 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 import backend.models.domain as models
 import backend.schemas.domain as schemas
-from backend.auth import get_current_admin
+from backend.ai.engine import ai_engine
+from backend.api.image_analyzer import extract_text_from_image_bytes, persist_image_analysis
+from backend.auth import get_current_admin, get_current_user
 from backend.database.config import get_db
 
 
@@ -32,6 +34,128 @@ def _serialize_log(row: models.ModerationLog) -> schemas.ModerationLogResponse:
         reviewed_by=row.reviewed_by,
         reviewed_at=row.reviewed_at,
         created_at=row.created_at,
+    )
+
+
+@router.post("/text", response_model=schemas.ModerateTextResponse)
+def moderate_text(
+    payload: schemas.ModerateTextRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    analysis = ai_engine.analyze_message(text)
+    action = analysis.get("action") or ai_engine.action_for_score(analysis["risk_score"])
+    severity = analysis.get("severity") or ai_engine.severity_for_score(analysis["risk_score"])
+    saved_chat_id = None
+    saved_message_id = None
+
+    if payload.persist_result:
+        chat = models.Chat(
+            user_id=current_user.id,
+            platform="Moderation_Text",
+            chat_name=(payload.chat_name or "Direct text moderation").strip(),
+            chat_type="direct",
+            is_active=True,
+        )
+        chat.participants.append(current_user)
+        db.add(chat)
+        db.commit()
+        db.refresh(chat)
+
+        message = models.Message(
+            chat_id=chat.id,
+            sender=current_user.username or current_user.name or current_user.email,
+            sender_user_id=current_user.id,
+            sender_id=str(current_user.id),
+            sender_name=current_user.name or current_user.username or current_user.email,
+            message=text,
+            content=text,
+            source="moderate_text",
+            direction="outgoing",
+            is_from_me=True,
+            timestamp=datetime.now(timezone.utc),
+            risk_score=analysis["risk_score"],
+            toxicity_score=analysis["risk_score"],
+            is_flagged=action in {"flag", "block"},
+            label=analysis["label"],
+        )
+        db.add(message)
+        db.commit()
+        db.refresh(message)
+
+        toxicity_details = analysis.get("details", {}).get("toxicity", {})
+        db.add(
+            models.ModerationLog(
+                message_id=message.id,
+                toxic=toxicity_details.get("toxicity", 0.0),
+                severe_toxic=toxicity_details.get("severe_toxic", 0.0),
+                obscene=toxicity_details.get("obscene", 0.0),
+                threat=toxicity_details.get("threat", 0.0),
+                insult=toxicity_details.get("insult", 0.0),
+                identity_hate=toxicity_details.get("identity_hate", 0.0),
+                action=action,
+            )
+        )
+        if action in {"flag", "block"}:
+            db.add(
+                models.Alert(
+                    message_id=message.id,
+                    alert_type=analysis["label"] or "Unsafe",
+                    severity=severity,
+                    status="open",
+                )
+            )
+        db.commit()
+        saved_chat_id = chat.id
+        saved_message_id = message.id
+
+    return schemas.ModerateTextResponse(
+        chat_id=saved_chat_id,
+        message_id=saved_message_id,
+        text=text,
+        action=action,
+        severity=severity,
+        risk_score=analysis["risk_score"],
+        label=analysis["label"],
+        blocked=action == "block",
+        saved=payload.persist_result,
+        thresholds=analysis.get("thresholds", {}),
+        details=analysis.get("details", {}),
+    )
+
+
+@router.post("/image", response_model=schemas.ModerateImageResponse)
+async def moderate_image(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(get_current_user),
+):
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are supported")
+
+    content = await file.read()
+    extracted_text = extract_text_from_image_bytes(content)
+    analysis = ai_engine.analyze_message(extracted_text)
+    chat, message = persist_image_analysis(
+        db=db,
+        filename=file.filename or "uploaded-image",
+        extracted_text=extracted_text,
+        analysis=analysis,
+    )
+    return schemas.ModerateImageResponse(
+        chat_id=chat.id,
+        message_id=message.id,
+        extracted_text=extracted_text,
+        action=analysis.get("action") or ai_engine.action_for_score(analysis["risk_score"]),
+        severity=analysis.get("severity") or ai_engine.severity_for_score(analysis["risk_score"]),
+        risk_score=analysis["risk_score"],
+        label=analysis["label"],
+        blocked=(analysis.get("action") or ai_engine.action_for_score(analysis["risk_score"])) == "block",
+        saved=True,
     )
 
 

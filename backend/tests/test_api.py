@@ -913,6 +913,110 @@ def test_auth_register_login_and_protected_routes():
     assert unauthorized_resp.status_code == 401
 
 
+def test_messages_send_and_get_chat_history():
+    registered = register_user("chat-user", "chat-user@example.com", "secret123")
+    token = registered["access_token"]
+
+    with patch("backend.api.messages.ai_engine.analyze_message", return_value={
+        "risk_score": 91.0,
+        "label": "Threat",
+        "action": "block",
+        "severity": "High",
+        "thresholds": {"flag": 55.0, "block": 85.0},
+        "details": {"toxicity": {"threat": 0.91}},
+    }):
+        first_resp = client.post(
+            "/api/messages/send",
+            json={"chat_name": "Protected Chat", "content": "I will break everything."},
+            headers=auth_headers(token),
+        )
+    assert first_resp.status_code == 200
+    first_data = first_resp.json()
+    assert first_data["action"] == "block"
+    assert first_data["blocked"] is True
+
+    with patch("backend.api.messages.ai_engine.analyze_message", return_value={
+        "risk_score": 12.0,
+        "label": "Safe",
+        "action": "allow",
+        "severity": "Low",
+        "thresholds": {"flag": 55.0, "block": 85.0},
+        "details": {"toxicity": {}},
+    }):
+        second_resp = client.post(
+            "/api/messages/send",
+            json={"chat_id": first_data["chat_id"], "content": "This one is safe."},
+            headers=auth_headers(token),
+        )
+    assert second_resp.status_code == 200
+    second_data = second_resp.json()
+    assert second_data["action"] == "allow"
+    assert second_data["blocked"] is False
+
+    history_resp = client.get(f"/api/messages/{first_data['chat_id']}", headers=auth_headers(token))
+    assert history_resp.status_code == 200
+    history = history_resp.json()
+    assert history["chat_name"] == "Protected Chat"
+    assert history["total_messages"] == 2
+    assert history["messages"][0]["direction"] == "outgoing"
+
+
+def test_moderate_text_and_image_routes():
+    registered = register_user("moderate-user", "moderate-user@example.com", "secret123")
+    token = registered["access_token"]
+
+    with patch("backend.api.moderation.ai_engine.analyze_message", return_value={
+        "risk_score": 68.0,
+        "label": "Unsafe",
+        "action": "flag",
+        "severity": "Medium",
+        "thresholds": {"flag": 55.0, "block": 85.0},
+        "details": {"toxicity": {"toxicity": 0.68}},
+    }):
+        text_resp = client.post(
+            "/api/moderate/text",
+            json={"text": "This is abusive text.", "persist_result": True, "chat_name": "Manual review"},
+            headers=auth_headers(token),
+        )
+    assert text_resp.status_code == 200
+    text_data = text_resp.json()
+    assert text_data["action"] == "flag"
+    assert text_data["saved"] is True
+    assert text_data["thresholds"]["block"] == 85.0
+    assert text_data["chat_id"] is not None
+
+    original = image_analyzer.pytesseract.image_to_string
+    image_analyzer.pytesseract.image_to_string = lambda img: "Threat text from OCR"
+    try:
+        img = Image.new("RGB", (80, 30), color=(255, 255, 255))
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+
+        with patch("backend.api.moderation.ai_engine.analyze_message", return_value={
+            "risk_score": 88.0,
+            "label": "Threat",
+            "action": "block",
+            "severity": "High",
+            "thresholds": {"flag": 55.0, "block": 85.0},
+            "details": {"toxicity": {"threat": 0.88}},
+        }):
+            image_resp = client.post(
+                "/api/moderate/image",
+                files={"file": ("moderate.png", buf.read(), "image/png")},
+                headers=auth_headers(token),
+            )
+    finally:
+        image_analyzer.pytesseract.image_to_string = original
+
+    assert image_resp.status_code == 200
+    image_data = image_resp.json()
+    assert image_data["action"] == "block"
+    assert image_data["blocked"] is True
+    assert image_data["saved"] is True
+    assert image_data["extracted_text"] == "Threat text from OCR"
+
+
 def test_live_whatsapp_monitoring_websocket_flow():
     with client.websocket_connect("/ws/whatsapp") as websocket:
         websocket.send_text("subscribe")
