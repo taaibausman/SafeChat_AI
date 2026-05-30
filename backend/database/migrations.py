@@ -51,6 +51,13 @@ def _has_table(engine: Engine, table_name: str) -> bool:
     return table_name in inspect(engine).get_table_names()
 
 
+def _create_table_if_missing(engine: Engine, table_name: str, ddl: str) -> None:
+    if _has_table(engine, table_name):
+        return
+    with engine.begin() as connection:
+        connection.execute(text(ddl))
+
+
 def _ensure_columns(engine: Engine, table_name: str, columns: dict[str, str]) -> None:
     existing = {column["name"] for column in inspect(engine).get_columns(table_name)}
     with engine.begin() as connection:
@@ -77,6 +84,29 @@ def _dedupe_live_message_ids(engine: Engine) -> None:
                      AND keeper.id < duplicate.id
                     WHERE duplicate.external_message_id IS NOT NULL
                 )
+                """
+            )
+        )
+
+
+def _backfill_message_columns(engine: Engine) -> None:
+    if not _has_table(engine, "messages"):
+        return
+    existing = {column["name"] for column in inspect(engine).get_columns("messages")}
+    content_source = "message" if "message" in existing else "content"
+    score_source = "risk_score" if "risk_score" in existing else "toxicity_score"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                f"""
+                UPDATE messages
+                SET content = COALESCE(content, {content_source}),
+                    toxicity_score = COALESCE(toxicity_score, {score_source}),
+                    is_flagged = CASE
+                        WHEN is_flagged IS NULL AND COALESCE({score_source}, 0) > 50 THEN 1
+                        WHEN is_flagged IS NULL THEN 0
+                        ELSE is_flagged
+                    END
                 """
             )
         )
@@ -175,6 +205,132 @@ def _migration_20260530_001_whatsapp_live_schema(engine: Engine) -> None:
     )
 
 
+def _migration_20260530_002_core_database_alignment(engine: Engine) -> None:
+    _create_table_if_missing(
+        engine,
+        "users",
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY,
+            username VARCHAR UNIQUE,
+            email VARCHAR NOT NULL UNIQUE,
+            password_hash VARCHAR,
+            role VARCHAR DEFAULT 'user',
+            is_active BOOLEAN DEFAULT 1,
+            firebase_uid VARCHAR UNIQUE,
+            name VARCHAR,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    )
+    _ensure_columns(
+        engine,
+        "users",
+        {
+            "username": "VARCHAR",
+            "password_hash": "VARCHAR",
+            "role": "VARCHAR DEFAULT 'user'",
+            "is_active": "BOOLEAN DEFAULT 1",
+            "firebase_uid": "VARCHAR",
+            "name": "VARCHAR",
+            "created_at": "DATETIME",
+        },
+    )
+
+    _create_table_if_missing(
+        engine,
+        "chat_participants",
+        """
+        CREATE TABLE chat_participants (
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, chat_id),
+            FOREIGN KEY(user_id) REFERENCES users (id),
+            FOREIGN KEY(chat_id) REFERENCES chats (id)
+        )
+        """,
+    )
+
+    if _has_table(engine, "chats"):
+        _ensure_columns(
+            engine,
+            "chats",
+            {
+                "user_id": "INTEGER",
+                "is_active": "BOOLEAN DEFAULT 1",
+                "created_at": "DATETIME",
+            },
+        )
+
+    if _has_table(engine, "messages"):
+        _ensure_columns(
+            engine,
+            "messages",
+            {
+                "sender_user_id": "INTEGER",
+                "content": "TEXT",
+                "is_flagged": "BOOLEAN DEFAULT 0",
+                "toxicity_score": "FLOAT",
+            },
+        )
+        _backfill_message_columns(engine)
+
+    _create_table_if_missing(
+        engine,
+        "moderation_logs",
+        """
+        CREATE TABLE moderation_logs (
+            id INTEGER PRIMARY KEY,
+            message_id INTEGER NOT NULL,
+            toxic FLOAT DEFAULT 0,
+            severe_toxic FLOAT DEFAULT 0,
+            obscene FLOAT DEFAULT 0,
+            threat FLOAT DEFAULT 0,
+            insult FLOAT DEFAULT 0,
+            identity_hate FLOAT DEFAULT 0,
+            action VARCHAR DEFAULT 'allow',
+            reviewed_by INTEGER,
+            reviewed_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(message_id) REFERENCES messages (id),
+            FOREIGN KEY(reviewed_by) REFERENCES users (id)
+        )
+        """,
+    )
+
+    _create_table_if_missing(
+        engine,
+        "image_scans",
+        """
+        CREATE TABLE image_scans (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            file_path VARCHAR NOT NULL,
+            ocr_text TEXT,
+            is_flagged BOOLEAN DEFAULT 0,
+            toxicity_score FLOAT,
+            scan_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users (id)
+        )
+        """,
+    )
+
+    _ensure_indexes(
+        engine,
+        [
+            "CREATE INDEX IF NOT EXISTS ix_users_username ON users (username)",
+            "CREATE INDEX IF NOT EXISTS ix_users_email ON users (email)",
+            "CREATE INDEX IF NOT EXISTS ix_messages_sender_user_id ON messages (sender_user_id)",
+            "CREATE INDEX IF NOT EXISTS ix_moderation_logs_message_id ON moderation_logs (message_id)",
+            "CREATE INDEX IF NOT EXISTS ix_moderation_logs_reviewed_by ON moderation_logs (reviewed_by)",
+            "CREATE INDEX IF NOT EXISTS ix_image_scans_user_id ON image_scans (user_id)",
+            "CREATE INDEX IF NOT EXISTS ix_image_scans_scan_time ON image_scans (scan_time)",
+        ],
+    )
+
+
 MIGRATIONS: list[tuple[str, MigrationFunc]] = [
     ("20260530_001_whatsapp_live_schema", _migration_20260530_001_whatsapp_live_schema),
+    ("20260530_002_core_database_alignment", _migration_20260530_002_core_database_alignment),
 ]

@@ -782,16 +782,34 @@ async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db:
         sender_id=payload.sender,
         sender_name=payload.sender_name,
         message=payload.text,
+        content=payload.text,
         external_message_id=payload.message_id,
         source="whatsapp_bridge",
         raw_payload=json.dumps(payload.raw_payload) if payload.raw_payload else None,
         timestamp=_resolve_timestamp(payload.timestamp),
         risk_score=analysis["risk_score"],
+        toxicity_score=analysis["risk_score"],
+        is_flagged=(analysis["risk_score"] or 0) > 50,
         label=analysis["label"],
     )
     db.add(message)
     db.commit()
     db.refresh(message)
+
+    toxicity_details = analysis.get("details", {}).get("toxicity", {})
+    db.add(
+        models.ModerationLog(
+            message_id=message.id,
+            toxic=toxicity_details.get("toxicity", 0.0),
+            severe_toxic=toxicity_details.get("severe_toxic", 0.0),
+            obscene=toxicity_details.get("obscene", 0.0),
+            threat=toxicity_details.get("threat", 0.0),
+            insult=toxicity_details.get("insult", 0.0),
+            identity_hate=toxicity_details.get("identity_hate", 0.0),
+            action="flag" if (analysis["risk_score"] or 0) > 50 else "allow",
+        )
+    )
+    db.commit()
 
     if (message.risk_score or 0) > 50:
         severity = "High" if (message.risk_score or 0) >= 80 else "Medium"

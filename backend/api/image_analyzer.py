@@ -60,13 +60,40 @@ async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_d
         chat_id=new_chat.id,
         sender="Extracted_Text",
         message=extracted_text,
+        content=extracted_text,
         timestamp=datetime.now(timezone.utc),
         risk_score=score,
+        toxicity_score=score,
+        is_flagged=score > 50,
         label=label
     )
     db.add(db_msg)
     db.commit()
     db.refresh(db_msg)
+
+    toxicity_details = analysis.get("details", {}).get("toxicity", {})
+    db.add(
+        models.ModerationLog(
+            message_id=db_msg.id,
+            toxic=toxicity_details.get("toxicity", 0.0),
+            severe_toxic=toxicity_details.get("severe_toxic", 0.0),
+            obscene=toxicity_details.get("obscene", 0.0),
+            threat=toxicity_details.get("threat", 0.0),
+            insult=toxicity_details.get("insult", 0.0),
+            identity_hate=toxicity_details.get("identity_hate", 0.0),
+            action="flag" if score > 50 else "allow",
+        )
+    )
+    db.add(
+        models.ImageScan(
+            file_path=file.filename or "uploaded-image",
+            ocr_text=extracted_text,
+            is_flagged=score > 50,
+            toxicity_score=score,
+            scan_time=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
 
     # Broadcast live message
     try:

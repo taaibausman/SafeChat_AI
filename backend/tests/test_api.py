@@ -43,10 +43,12 @@ def test_upload_chat_and_get_report():
 def test_schema_migrations_table_exists():
     db = SessionLocal()
     try:
-        row = db.execute(
-            text("SELECT version FROM schema_migrations WHERE version = '20260530_001_whatsapp_live_schema'")
-        ).first()
-        assert row is not None
+        versions = {
+            row[0]
+            for row in db.execute(text("SELECT version FROM schema_migrations")).fetchall()
+        }
+        assert "20260530_001_whatsapp_live_schema" in versions
+        assert "20260530_002_core_database_alignment" in versions
     finally:
         db.close()
 
@@ -71,6 +73,15 @@ def test_image_upload():
     assert resp.status_code == 200
     data = resp.json()
     assert "chat_id" in data
+
+    db = SessionLocal()
+    try:
+        image_scan = db.query(models.ImageScan).order_by(models.ImageScan.id.desc()).first()
+        assert image_scan is not None
+        assert image_scan.file_path == "test.png"
+        assert image_scan.ocr_text == "Extracted test text"
+    finally:
+        db.close()
 
 
 def test_whatsapp_status_and_incoming_routes():
@@ -123,6 +134,14 @@ def test_whatsapp_status_and_incoming_routes():
     feed_data = feed_resp.json()
     assert isinstance(feed_data.get("messages"), list)
     assert "total" in feed_data
+
+    db = SessionLocal()
+    try:
+        moderation_log = db.query(models.ModerationLog).order_by(models.ModerationLog.id.desc()).first()
+        assert moderation_log is not None
+        assert moderation_log.action in {"allow", "flag"}
+    finally:
+        db.close()
 
 
 def test_whatsapp_chat_and_bridge_routes(monkeypatch):

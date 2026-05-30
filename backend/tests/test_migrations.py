@@ -47,6 +47,25 @@ class TestMigrations(unittest.TestCase):
             result = conn.execute(text("SELECT version FROM schema_migrations"))
             versions = [row[0] for row in result.fetchall()]
             self.assertIn("20260530_001_whatsapp_live_schema", versions)
+            self.assertIn("20260530_002_core_database_alignment", versions)
+
+            result = conn.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                    "('users', 'chat_participants', 'moderation_logs', 'image_scans')"
+                )
+            )
+            created_tables = {row[0] for row in result.fetchall()}
+            self.assertEqual(
+                created_tables,
+                {"users", "chat_participants", "moderation_logs", "image_scans"},
+            )
+
+            result = conn.execute(text("PRAGMA table_info(messages)"))
+            message_columns = {row[1] for row in result.fetchall()}
+            self.assertIn("content", message_columns)
+            self.assertIn("is_flagged", message_columns)
+            self.assertIn("toxicity_score", message_columns)
 
     def test_run_migrations_twice(self):
         self._create_legacy_tables()
@@ -56,7 +75,7 @@ class TestMigrations(unittest.TestCase):
 
         with self.engine.connect() as conn:
             result = conn.execute(text("SELECT COUNT(*) FROM schema_migrations"))
-            self.assertEqual(result.scalar(), 1)
+            self.assertEqual(result.scalar(), 2)
 
     def test_migrate_main_runs_metadata_and_migrations(self):
         with patch.object(migrate_script.Base.metadata, "create_all") as create_all_mock, patch.object(
