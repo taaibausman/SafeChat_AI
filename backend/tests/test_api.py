@@ -1,7 +1,9 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from backend.main import app
 from backend.database.config import engine, Base
 from backend.database.config import SessionLocal
+from backend.database.migrations import run_migrations
 import backend.api.image_analyzer as image_analyzer
 import backend.models.domain as models
 from io import BytesIO
@@ -16,6 +18,7 @@ def setup_module(module):
     # reset the database for tests
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    run_migrations(engine)
 
 
 def test_upload_chat_and_get_report():
@@ -34,6 +37,17 @@ def test_upload_chat_and_get_report():
     assert report["id"] == chat_id
     assert isinstance(report["messages"], list)
     assert len(report["messages"]) >= 1
+
+
+def test_schema_migrations_table_exists():
+    db = SessionLocal()
+    try:
+        row = db.execute(
+            text("SELECT version FROM schema_migrations WHERE version = '20260530_001_whatsapp_live_schema'")
+        ).first()
+        assert row is not None
+    finally:
+        db.close()
 
 
 def test_image_upload():

@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Link, Route, Routes, useLocation } from 'react-router-dom';
 import { Suspense, lazy, useEffect, useState } from 'react';
 import {
+  Activity,
   ArrowUpRight,
   ArrowRight,
   Eye,
@@ -25,6 +26,7 @@ const ExportAnalyzer = lazy(() => import('./pages/ExportAnalyzer'));
 const Results = lazy(() => import('./pages/Results'));
 const ImageAnalyzer = lazy(() => import('./pages/ImageAnalyzer'));
 const RealtimeMonitor = lazy(() => import('./pages/RealtimeMonitor'));
+const AdminOperations = lazy(() => import('./pages/AdminOperations'));
 
 type DashboardSummary = {
   total_chats: number;
@@ -41,11 +43,44 @@ type DashboardSummary = {
   }>;
 };
 
+type BackendHealthSummary = {
+  bridge_ops: {
+    current_state: {
+      status: string;
+      connected_phone?: string | null;
+      bridge_reachable?: boolean;
+    };
+    recent_event_count: number;
+    recent_snapshot_count: number;
+    recent_window_hours: number;
+    bridge_reachable: boolean;
+    attention_required: boolean;
+  };
+  live_ops: {
+    live_summary: {
+      total_live_chats: number;
+      total_live_messages: number;
+      flagged_live_messages: number;
+      open_alerts: number;
+    };
+    recent_feed_count: number;
+    recent_alert_count: number;
+    flagged_chat_count: number;
+    high_risk_chat_count: number;
+    recent_window_hours: number;
+    attention_required: boolean;
+  };
+  recent_window_hours: number;
+  attention_required: boolean;
+  status: 'healthy' | 'attention';
+};
+
 const APP_NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: Shield },
   { to: '/analyze', label: 'Analyze Chat', icon: MessageSquare },
   { to: '/report', label: 'Report', icon: FileText },
   { to: '/live', label: 'Live Monitor', icon: Smartphone },
+  { to: '/admin-ops', label: 'Admin Ops', icon: Activity },
   { to: '/settings', label: 'Settings', icon: Lock },
 ];
 
@@ -95,15 +130,24 @@ function StatCard({
 
 function Dashboard() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [healthSummary, setHealthSummary] = useState<BackendHealthSummary | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     const loadSummary = async () => {
-      try {
-        const response = await axios.get(`${API_BASE_URL}/api/analyze/dashboard-summary`);
-        setSummary(response.data);
-      } catch {
+      const [dashboardResult, healthResult] = await Promise.allSettled([
+        axios.get(`${API_BASE_URL}/api/analyze/dashboard-summary`),
+        axios.get(`${API_BASE_URL}/api/whatsapp/health-summary`),
+      ]);
+
+      if (dashboardResult.status === 'fulfilled') {
+        setSummary(dashboardResult.value.data);
+      } else {
         setError('Dashboard data is unavailable.');
+      }
+
+      if (healthResult.status === 'fulfilled') {
+        setHealthSummary(healthResult.value.data);
       }
     };
 
@@ -165,6 +209,45 @@ function Dashboard() {
             <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-5">
               <p className="text-sm text-slate-400">Total messages analyzed</p>
               <p className="mt-3 text-3xl font-semibold text-white">{summary?.total_messages ?? 0}</p>
+            </div>
+            <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-5">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm text-slate-400">Backend health</p>
+                  <p className={`mt-3 text-2xl font-semibold ${healthSummary?.status === 'attention' ? 'text-amber-300' : 'text-emerald-300'}`}>
+                    {healthSummary?.status ?? 'unknown'}
+                  </p>
+                </div>
+                <span className={`rounded-full px-3 py-1.5 text-xs ${healthSummary?.attention_required ? 'border border-amber-500/20 bg-amber-500/10 text-amber-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
+                  {healthSummary?.attention_required ? 'Needs review' : 'Stable'}
+                </span>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Bridge ops</p>
+                  <p className="mt-2 text-sm text-white">
+                    {healthSummary?.bridge_ops.current_state.status ?? 'unknown'}
+                    {healthSummary?.bridge_ops.bridge_reachable ? ' · reachable' : ' · offline'}
+                  </p>
+                  <p className="mt-2 text-xs text-slate-400">
+                    {healthSummary?.bridge_ops.recent_event_count ?? 0} events · {healthSummary?.bridge_ops.recent_snapshot_count ?? 0} snapshots
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
+                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Live ops</p>
+                  <p className="mt-2 text-sm text-white">
+                    {healthSummary?.live_ops.live_summary.total_live_chats ?? 0} chats · {healthSummary?.live_ops.live_summary.total_live_messages ?? 0} messages
+                  </p>
+                  <p className="mt-2 text-xs text-slate-400">
+                    {healthSummary?.live_ops.live_summary.flagged_live_messages ?? 0} flagged · {healthSummary?.live_ops.live_summary.open_alerts ?? 0} open alerts
+                  </p>
+                </div>
+              </div>
+              {healthSummary?.bridge_ops.current_state.connected_phone && (
+                <p className="mt-4 text-xs text-cyan-300">
+                  Connected account: {healthSummary.bridge_ops.current_state.connected_phone}
+                </p>
+              )}
             </div>
             <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-5">
               <p className="text-sm text-slate-400">Current capabilities</p>
@@ -705,7 +788,7 @@ function RouteFallback() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
       <div className="rounded-[28px] border border-white/8 bg-slate-900/70 p-8 text-center shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
-        <p className="text-sm text-slate-400">Loading workspace…</p>
+        <p className="text-sm text-slate-400">Loading workspace...</p>
       </div>
     </div>
   );
@@ -724,6 +807,7 @@ function App() {
         <Route path="/analyze" element={<AppShell><Suspense fallback={<RouteFallback />}><ExportAnalyzer /></Suspense></AppShell>} />
         <Route path="/report" element={<AppShell><ReportsPage /></AppShell>} />
         <Route path="/live" element={<AppShell><Suspense fallback={<RouteFallback />}><RealtimeMonitor /></Suspense></AppShell>} />
+        <Route path="/admin-ops" element={<AppShell><Suspense fallback={<RouteFallback />}><AdminOperations /></Suspense></AppShell>} />
         <Route path="/settings" element={<AppShell><SettingsPage /></AppShell>} />
         <Route path="/export-analyzer" element={<AppShell><Suspense fallback={<RouteFallback />}><ExportAnalyzer /></Suspense></AppShell>} />
         <Route path="/results/:id" element={<AppShell><Suspense fallback={<RouteFallback />}><Results /></Suspense></AppShell>} />

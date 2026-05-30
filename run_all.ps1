@@ -26,8 +26,9 @@ function Start-Window {
 }
 
 Write-Host "Starting SafeChat AI services..."
-Start-Window "Backend" "& '$root\.venv\Scripts\python.exe' -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000" $root
-Start-Window "WhatsApp Bridge" "cd whatsapp; npm.cmd install; npm.cmd run dev" $root
-Start-Window "Frontend" "cd frontend; npm.cmd install; npm.cmd run dev -- --host 0.0.0.0" $root
+Start-Window "Backend" "& '$root\backend\run_backend.ps1'" $root
+Start-Window "WhatsApp Bridge" "Set-Location '$root\whatsapp'; npm.cmd run dev" $root
+Start-Window "Frontend" "Set-Location '$root\frontend'; npm.cmd run dev -- --host 127.0.0.1" $root
 
-Write-Host "All windows started. Keep this terminal open."
+Write-Host "All windows started."
+Write-Host "Install backend/frontend/bridge dependencies first if this is a fresh checkout."

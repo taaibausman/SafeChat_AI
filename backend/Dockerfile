@@ -4,10 +4,10 @@ WORKDIR /app
 # Install system deps for Tesseract if required (optional, commented)
 # RUN apt-get update && apt-get install -y tesseract-ocr libgl1 && rm -rf /var/lib/apt/lists/*
 
-COPY backend/requirements.txt ./requirements.txt
+COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY backend/ ./backend/
+COPY . ./backend/
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000

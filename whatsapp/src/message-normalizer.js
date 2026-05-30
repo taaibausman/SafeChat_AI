@@ -1,5 +1,6 @@
 export function normalizeIncomingMessage(eventMessage) {
   const remoteJid = eventMessage.key?.remoteJid;
+  const isGroup = Boolean(remoteJid?.endsWith("@g.us"));
 
   if (!remoteJid || eventMessage.key?.fromMe || !eventMessage.message) {
     return null;
@@ -15,11 +16,13 @@ export function normalizeIncomingMessage(eventMessage) {
   return {
     message_id: eventMessage.key?.id,
     group_id: cleanJid(remoteJid),
-    group_name: cleanJid(remoteJid),
+    group_name: isGroup ? cleanJid(remoteJid) : eventMessage.pushName || cleanJid(senderJid),
+    chat_type: isGroup ? "group" : "direct",
     sender: cleanJid(senderJid),
     sender_name: eventMessage.pushName || cleanJid(senderJid),
     text,
     timestamp: Number(eventMessage.messageTimestamp || Math.floor(Date.now() / 1000)),
+    raw_payload: sanitizeEventMessage(eventMessage),
   };
 }
 
@@ -48,4 +51,17 @@ function unwrapEphemeral(message) {
 
 function cleanJid(jid) {
   return String(jid || "").split("@")[0].split(":")[0];
+}
+
+function sanitizeEventMessage(eventMessage) {
+  return {
+    key: {
+      id: eventMessage.key?.id,
+      remoteJid: eventMessage.key?.remoteJid,
+      participant: eventMessage.key?.participant,
+      fromMe: eventMessage.key?.fromMe,
+    },
+    pushName: eventMessage.pushName,
+    messageTimestamp: Number(eventMessage.messageTimestamp || 0),
+  };
 }

@@ -15,13 +15,14 @@ from backend.api.image_analyzer import router as image_router
 from backend.api.realtime import router as realtime_router
 from backend.api.whatsapp import router as whatsapp_router
 from backend.ai.engine import ai_engine
-from backend.database.config import engine, Base, ensure_schema
+from backend.database.config import engine, Base
+from backend.database.migrations import run_migrations
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
-    ensure_schema()
+    run_migrations(engine)
     # Schedule model loading in background so startup isn't blocked.
     try:
         asyncio.create_task(asyncio.to_thread(ai_engine._load_models))

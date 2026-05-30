@@ -4,7 +4,7 @@ import os
 from urllib import error, request
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload
 
 from backend.ai.engine import ai_engine
@@ -879,60 +879,54 @@ def get_live_chats(
     db: Session = Depends(get_db),
 ):
     if date_from or date_to:
-        message_query = (
-            db.query(models.Message, models.Chat)
+        aggregate_query = (
+            db.query(
+                models.Message.chat_id.label("chat_id"),
+                func.count(models.Message.id).label("message_count"),
+                func.sum(case((models.Message.risk_score > 50, 1), else_=0)).label("flagged_count"),
+                func.max(models.Message.timestamp).label("last_message_at"),
+            )
             .join(models.Chat, models.Chat.id == models.Message.chat_id)
             .filter(models.Chat.platform == "WhatsApp_Live")
         )
         if search:
-            message_query = message_query.filter(models.Chat.chat_name.ilike(f"%{search}%"))
+            aggregate_query = aggregate_query.filter(models.Chat.chat_name.ilike(f"%{search}%"))
         if date_from:
-            message_query = message_query.filter(models.Message.timestamp >= date_from)
+            aggregate_query = aggregate_query.filter(models.Message.timestamp >= date_from)
         if date_to:
-            message_query = message_query.filter(models.Message.timestamp <= date_to)
+            aggregate_query = aggregate_query.filter(models.Message.timestamp <= date_to)
 
-        rows = message_query.order_by(
-            models.Message.timestamp.desc().nullslast(), models.Message.id.desc()
-        ).all()
-        by_chat_id: dict[int, dict[str, object]] = {}
-        for message, chat in rows:
-            bucket = by_chat_id.setdefault(
-                chat.id,
-                {
-                    "chat": chat,
-                    "message_count": 0,
-                    "flagged_count": 0,
-                    "latest_message_at": None,
-                    "latest_preview": None,
-                },
+        aggregate_subquery = aggregate_query.group_by(models.Message.chat_id).subquery()
+        windowed_query = (
+            db.query(
+                models.Chat,
+                aggregate_subquery.c.message_count,
+                aggregate_subquery.c.flagged_count,
+                aggregate_subquery.c.last_message_at,
             )
-            bucket["message_count"] = int(bucket["message_count"]) + 1
-            if (message.risk_score or 0) > 50:
-                bucket["flagged_count"] = int(bucket["flagged_count"]) + 1
-            if bucket["latest_message_at"] is None:
-                bucket["latest_message_at"] = message.timestamp
-                bucket["latest_preview"] = message.message
-
-        if flagged_only:
-            by_chat_id = {
-                chat_id: bucket for chat_id, bucket in by_chat_id.items() if int(bucket["flagged_count"]) > 0
-            }
-
-        ordered_buckets = sorted(
-            by_chat_id.values(),
-            key=lambda bucket: (bucket["latest_message_at"] is not None, bucket["latest_message_at"], bucket["chat"].id),
-            reverse=True,
+            .join(aggregate_subquery, aggregate_subquery.c.chat_id == models.Chat.id)
         )
-        total = len(ordered_buckets)
-        paged_buckets = ordered_buckets[offset : offset + limit]
-        chat_ids = [bucket["chat"].id for bucket in paged_buckets]
+        if flagged_only:
+            windowed_query = windowed_query.filter(aggregate_subquery.c.flagged_count > 0)
+
+        total = windowed_query.count()
+        rows = (
+            windowed_query.order_by(
+                aggregate_subquery.c.last_message_at.desc().nullslast(),
+                models.Chat.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        chat_ids = [chat.id for chat, _, _, _ in rows]
         alert_counts_map = _get_chat_alert_counts_map(db, chat_ids, date_from=date_from, date_to=date_to)
+        latest_preview_map = _get_latest_message_preview_map(db, chat_ids, date_from=date_from, date_to=date_to)
 
         chats = []
-        for bucket in paged_buckets:
-            chat = bucket["chat"]
-            message_count = int(bucket["message_count"])
-            flagged_count = int(bucket["flagged_count"])
+        for chat, message_count, flagged_count, last_message_at in rows:
+            message_count = int(message_count or 0)
+            flagged_count = int(flagged_count or 0)
             unsafe_percentage = (flagged_count / message_count * 100) if message_count else 0.0
             alert_counts = alert_counts_map.get(chat.id, {"total": 0, "open": 0, "acknowledged": 0, "resolved": 0})
             chats.append(
@@ -950,8 +944,8 @@ def get_live_chats(
                     acknowledged_alert_count=alert_counts["acknowledged"],
                     resolved_alert_count=alert_counts["resolved"],
                     unsafe_percentage=unsafe_percentage,
-                    last_message_at=bucket["latest_message_at"],
-                    latest_message_preview=bucket["latest_preview"],
+                    last_message_at=last_message_at,
+                    latest_message_preview=latest_preview_map.get(chat.id),
                 )
             )
 

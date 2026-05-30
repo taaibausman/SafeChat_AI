@@ -18,7 +18,7 @@ let bridgeState = {
   detail: "Bridge booting",
 };
 
-async function postStatus(status, reason = null, qr = null) {
+async function postStatus(status, reason = null, qr = null, connectedPhone = null) {
   bridgeState = {
     status,
     detail: reason,
@@ -30,7 +30,7 @@ async function postStatus(status, reason = null, qr = null) {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ status, reason, qr }),
+      body: JSON.stringify({ status, reason, qr, connected_phone: connectedPhone }),
     });
   } catch (error) {
     console.warn("Could not post WhatsApp status to FastAPI:", error.message);
@@ -108,7 +108,7 @@ async function startWhatsApp() {
     if (connection === "open") {
       console.log("WhatsApp connection established.");
       reconnectDelayMs = 3000;
-      postStatus("connected", "Bridge connected.", null);
+      postStatus("connected", "Bridge connected.", null, sock.user?.id || null);
     }
 
     if (connection === "close") {

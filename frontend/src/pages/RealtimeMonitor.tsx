@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import axios from 'axios';
 import { Link } from 'react-router-dom';
 import {
+  BellRing,
+  History,
   QrCode,
   RadioTower,
   RefreshCw,
@@ -10,13 +11,18 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { API_BASE_URL, WS_BASE_URL, apiClient } from '../lib/api';
+import { WS_BASE_URL, apiClient } from '../lib/api';
 
 type WhatsAppStatus = {
   status: string;
   reason?: string | null;
   qr?: string | null;
   qr_updated_at?: string | null;
+  connected_phone?: string | null;
+  bridge_reachable?: boolean;
+  bridge_status?: string | null;
+  bridge_detail?: string | null;
+  last_event_at?: string | null;
 };
 
 type LiveMessage = {
@@ -24,7 +30,11 @@ type LiveMessage = {
   chat_id: number;
   chat_name: string;
   sender: string;
+  sender_id?: string | null;
+  sender_name?: string | null;
   message: string;
+  external_message_id?: string | null;
+  source?: string | null;
   timestamp?: string | null;
   risk_score?: number | null;
   label?: string | null;
@@ -34,10 +44,14 @@ type LiveChatSummary = {
   id: number;
   chat_name: string;
   platform: string;
+  external_chat_id?: string | null;
+  chat_type?: string | null;
+  is_live: boolean;
   message_count: number;
   flagged_messages: number;
   unsafe_percentage: number;
   last_message_at?: string | null;
+  latest_message_preview?: string | null;
 };
 
 type BridgeHealth = {
@@ -46,71 +60,254 @@ type BridgeHealth = {
   detail?: string | null;
 };
 
+type BridgeOpsSummary = {
+  current_state: {
+    status: string;
+    connected_phone?: string | null;
+    bridge_reachable?: boolean;
+  };
+  recent_event_count: number;
+  recent_snapshot_count: number;
+  recent_window_hours: number;
+  bridge_reachable: boolean;
+  attention_required: boolean;
+};
+
+type LiveOpsSummary = {
+  live_summary: {
+    total_live_chats: number;
+    total_live_messages: number;
+    flagged_live_messages: number;
+    open_alerts: number;
+  };
+  recent_feed_count: number;
+  recent_alert_count: number;
+  recent_flagged_message_count: number;
+  flagged_chat_count: number;
+  high_risk_chat_count: number;
+  recent_window_hours: number;
+  attention_required: boolean;
+};
+
+type BackendHealthSummary = {
+  bridge_ops: BridgeOpsSummary;
+  live_ops: LiveOpsSummary;
+  recent_window_hours: number;
+  attention_required: boolean;
+  status: 'healthy' | 'attention';
+};
+
+type LiveAlert = {
+  id: number;
+  message_id: number;
+  chat_id: number;
+  chat_name: string;
+  alert_type: string;
+  severity: string;
+  status: string;
+  notes?: string | null;
+  created_at: string;
+  sender: string;
+  message: string;
+  risk_score?: number | null;
+  label?: string | null;
+  timestamp?: string | null;
+};
+
+type BridgeEvent = {
+  id: number;
+  event_type: string;
+  status?: string | null;
+  detail?: string | null;
+  connected_phone?: string | null;
+  bridge_reachable?: boolean | null;
+  created_at: string;
+};
+
+type BridgeSnapshot = {
+  id: number;
+  status?: string | null;
+  reason?: string | null;
+  connected_phone?: string | null;
+  bridge_status?: string | null;
+  bridge_detail?: string | null;
+  bridge_reachable?: boolean | null;
+  qr_present: boolean;
+  created_at: string;
+};
+
+function toApiDate(value: string) {
+  if (!value) return undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return 'Unavailable';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Unavailable';
+  return parsed.toLocaleString();
+}
+
+function lastUpdatedLabel(value: string | null) {
+  if (!value) return 'Not refreshed yet';
+  return `Last updated ${formatDateTime(value)}`;
+}
+
+function scoreTone(score?: number | null) {
+  if ((score ?? 0) >= 80) return 'border-rose-500/25 bg-rose-500/10 text-rose-300';
+  if ((score ?? 0) > 50) return 'border-amber-500/25 bg-amber-500/10 text-amber-300';
+  return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
+}
+
 export default function RealtimeMonitor() {
   const [status, setStatus] = useState<WhatsAppStatus | null>(null);
   const [messages, setMessages] = useState<LiveMessage[]>([]);
   const [chats, setChats] = useState<LiveChatSummary[]>([]);
+  const [alerts, setAlerts] = useState<LiveAlert[]>([]);
+  const [bridgeEvents, setBridgeEvents] = useState<BridgeEvent[]>([]);
+  const [bridgeSnapshots, setBridgeSnapshots] = useState<BridgeSnapshot[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<number | null>(null);
   const [bridgeHealth, setBridgeHealth] = useState<BridgeHealth | null>(null);
+  const [healthSummary, setHealthSummary] = useState<BackendHealthSummary | null>(null);
+  const [chatSearch, setChatSearch] = useState('');
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const [severityFilter, setSeverityFilter] = useState('');
+  const [alertStatusFilter, setAlertStatusFilter] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+
+  const loadData = async (showSpinner = false) => {
+    if (showSpinner) {
+      setIsRefreshing(true);
+    } else {
+      setIsLoading(true);
+    }
+
+    const commonDateParams = {
+      date_from: toApiDate(dateFrom),
+      date_to: toApiDate(dateTo),
+    };
+
+    const [statusResult, feedResult, chatResult, healthResult, opsResult, alertResult, eventResult, snapshotResult] = await Promise.allSettled([
+      apiClient.get('/api/whatsapp/status'),
+      apiClient.get('/api/whatsapp/live-feed', {
+        params: {
+          ...commonDateParams,
+          chat_id: selectedChatId ?? undefined,
+          flagged_only: flaggedOnly || undefined,
+          limit: 100,
+        },
+      }),
+      apiClient.get('/api/whatsapp/chats', {
+        params: {
+          ...commonDateParams,
+          flagged_only: flaggedOnly || undefined,
+          limit: 100,
+        },
+      }),
+      apiClient.get('/api/whatsapp/bridge-health'),
+      apiClient.get('/api/whatsapp/health-summary'),
+      apiClient.get('/api/whatsapp/alerts', {
+        params: {
+          ...commonDateParams,
+          chat_id: selectedChatId ?? undefined,
+          severity: severityFilter || undefined,
+          status: alertStatusFilter || undefined,
+          limit: 25,
+        },
+      }),
+      apiClient.get('/api/whatsapp/bridge-events', {
+        params: {
+          ...commonDateParams,
+          limit: 8,
+        },
+      }),
+      apiClient.get('/api/whatsapp/bridge-state-history', {
+        params: {
+          ...commonDateParams,
+          limit: 8,
+        },
+      }),
+    ]);
+
+    const nextErrors: string[] = [];
+
+    if (statusResult.status === 'fulfilled') {
+      setStatus(statusResult.value.data);
+    } else {
+      nextErrors.push('WhatsApp status is unavailable.');
+    }
+
+    if (feedResult.status === 'fulfilled') {
+      setMessages(feedResult.value.data.messages ?? []);
+    } else {
+      setMessages([]);
+      nextErrors.push('Live feed could not be loaded.');
+    }
+
+    if (chatResult.status === 'fulfilled') {
+      setChats(chatResult.value.data.chats ?? []);
+    } else {
+      setChats([]);
+      nextErrors.push('Chat list is unavailable.');
+    }
+
+    if (healthResult.status === 'fulfilled') {
+      setBridgeHealth(healthResult.value.data);
+    } else {
+      setBridgeHealth({
+        reachable: false,
+        detail: 'Bridge health route is unavailable.',
+      });
+    }
+
+    if (opsResult.status === 'fulfilled') {
+      setHealthSummary(opsResult.value.data);
+    } else {
+      nextErrors.push('Backend health summary could not be loaded.');
+    }
+
+    if (alertResult.status === 'fulfilled') {
+      setAlerts(alertResult.value.data.alerts ?? []);
+    } else {
+      setAlerts([]);
+      nextErrors.push('Alert history could not be loaded.');
+    }
+
+    if (eventResult.status === 'fulfilled') {
+      setBridgeEvents(eventResult.value.data.events ?? []);
+    } else {
+      setBridgeEvents([]);
+      nextErrors.push('Bridge event history could not be loaded.');
+    }
+
+    if (snapshotResult.status === 'fulfilled') {
+      setBridgeSnapshots(snapshotResult.value.data.snapshots ?? []);
+    } else {
+      setBridgeSnapshots([]);
+      nextErrors.push('Bridge state history could not be loaded.');
+    }
+
+    setError(nextErrors.join(' '));
+    setLastUpdated(new Date().toISOString());
+    setIsLoading(false);
+    setIsRefreshing(false);
+  };
 
   useEffect(() => {
-    let active = true;
+    void loadData(false);
+    const timer = window.setInterval(() => {
+      void loadData(true);
+    }, 15000);
 
-    const load = async () => {
-      const [statusResult, feedResult, chatResult, healthResult] = await Promise.allSettled([
-        axios.get(`${API_BASE_URL}/api/whatsapp/status`),
-        axios.get(`${API_BASE_URL}/api/whatsapp/live-feed`, {
-          params: selectedChatId ? { chat_id: selectedChatId } : undefined,
-        }),
-        axios.get(`${API_BASE_URL}/api/whatsapp/chats`),
-        axios.get(`${API_BASE_URL}/api/whatsapp/bridge-health`),
-      ]);
-
-      if (!active) return;
-
-      const nextError: string[] = [];
-
-      if (statusResult.status === 'fulfilled') {
-        setStatus(statusResult.value.data);
-      } else {
-        nextError.push('WhatsApp status is unavailable.');
-      }
-
-      if (feedResult.status === 'fulfilled') {
-        setMessages(feedResult.value.data.messages ?? []);
-      } else {
-        nextError.push('Live feed could not be loaded.');
-      }
-
-      if (chatResult.status === 'fulfilled') {
-        setChats(chatResult.value.data.chats ?? []);
-      } else {
-        setChats([]);
-        nextError.push('Chat list unavailable. Restart the backend to enable chat-level WhatsApp routes.');
-      }
-
-      if (healthResult.status === 'fulfilled') {
-        setBridgeHealth(healthResult.value.data);
-      } else {
-        setBridgeHealth({
-          reachable: false,
-          detail: 'Bridge health route unavailable. Restart the backend to enable bridge controls.',
-        });
-      }
-
-      setError(nextError.join(' '));
-    };
-
-    load();
-    const timer = window.setInterval(load, 5000);
-
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [selectedChatId]);
+    return () => window.clearInterval(timer);
+  }, [selectedChatId, flaggedOnly, severityFilter, alertStatusFilter, dateFrom, dateTo]);
 
   useEffect(() => {
     const socket = new WebSocket(`${WS_BASE_URL}/ws/whatsapp`);
@@ -126,31 +323,45 @@ export default function RealtimeMonitor() {
           setStatus(parsed.payload);
           return;
         }
+
         if (parsed.type === 'message') {
           const payload = parsed.payload as LiveMessage;
-          setChats((current) => {
-            const existing = current.find((item) => item.id === payload.chat_id);
-            if (!existing) {
-              return current;
-            }
-            return current.map((item) =>
-              item.id === payload.chat_id
-                ? {
-                    ...item,
-                    message_count: item.message_count + 1,
-                    flagged_messages: item.flagged_messages + ((payload.risk_score ?? 0) > 50 ? 1 : 0),
-                    unsafe_percentage:
-                      ((item.flagged_messages + ((payload.risk_score ?? 0) > 50 ? 1 : 0)) / (item.message_count + 1)) * 100,
-                    last_message_at: payload.timestamp ?? item.last_message_at,
-                  }
-                : item
-            );
-          });
+          setChats((current) =>
+            current.map((item) => {
+              if (item.id !== payload.chat_id) return item;
+              const nextFlagged = item.flagged_messages + ((payload.risk_score ?? 0) > 50 ? 1 : 0);
+              const nextCount = item.message_count + 1;
+              return {
+                ...item,
+                message_count: nextCount,
+                flagged_messages: nextFlagged,
+                unsafe_percentage: nextCount ? (nextFlagged / nextCount) * 100 : 0,
+                last_message_at: payload.timestamp ?? item.last_message_at,
+                latest_message_preview: payload.message,
+              };
+            })
+          );
+
           setMessages((current) => {
-            if (selectedChatId !== null && payload.chat_id !== selectedChatId) {
-              return current;
-            }
-            return [payload, ...current].slice(0, 50);
+            const matchesChat = selectedChatId === null || payload.chat_id === selectedChatId;
+            const matchesFlagged = !flaggedOnly || (payload.risk_score ?? 0) > 50;
+            if (!matchesChat || !matchesFlagged) return current;
+            return [payload, ...current].slice(0, 100);
+          });
+          return;
+        }
+
+        if (parsed.type === 'chat_updated') {
+          const payload = parsed.payload as { chat: LiveChatSummary };
+          setChats((current) => {
+            const next = current.some((item) => item.id === payload.chat.id)
+              ? current.map((item) => (item.id === payload.chat.id ? payload.chat : item))
+              : [payload.chat, ...current];
+            return next.sort((a, b) => {
+              const aTime = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
+              const bTime = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+              return bTime - aTime;
+            });
           });
         }
       } catch {
@@ -162,10 +373,8 @@ export default function RealtimeMonitor() {
       setError((current) => current || 'Realtime connection failed. Falling back to periodic refresh.');
     };
 
-    return () => {
-      socket.close();
-    };
-  }, [selectedChatId]);
+    return () => socket.close();
+  }, [selectedChatId, flaggedOnly]);
 
   const qrImage = status?.qr
     ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(status.qr)}`
@@ -177,14 +386,46 @@ export default function RealtimeMonitor() {
     [chats, selectedChatId]
   );
 
+  const filteredChats = useMemo(() => {
+    const query = chatSearch.trim().toLowerCase();
+    return chats.filter((chat) => {
+      const matchesSearch =
+        !query ||
+        chat.chat_name.toLowerCase().includes(query) ||
+        (chat.chat_type ?? '').toLowerCase().includes(query);
+      const matchesFlagged = !flaggedOnly || chat.flagged_messages > 0;
+      return matchesSearch && matchesFlagged;
+    });
+  }, [chatSearch, chats, flaggedOnly]);
+
+  const filteredMessages = useMemo(
+    () => messages.filter((message) => !flaggedOnly || (message.risk_score ?? 0) > 50),
+    [flaggedOnly, messages]
+  );
+
+  const refreshNow = async () => {
+    await loadData(true);
+  };
+
+  const resetFilters = () => {
+    setDateFrom('');
+    setDateTo('');
+    setSeverityFilter('');
+    setAlertStatusFilter('');
+    setFlaggedOnly(false);
+    setSelectedChatId(null);
+    setChatSearch('');
+  };
+
   const restartBridge = async () => {
     try {
       setIsRestarting(true);
       await apiClient.post('/api/whatsapp/bridge-restart');
+      await loadData(true);
     } catch {
       setError('Could not restart the WhatsApp bridge.');
     } finally {
-      setTimeout(() => setIsRestarting(false), 1500);
+      window.setTimeout(() => setIsRestarting(false), 1500);
     }
   };
 
@@ -196,30 +437,117 @@ export default function RealtimeMonitor() {
             <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">LIVE MONITOR</p>
             <h1 className="text-3xl font-semibold tracking-tight text-white md:text-5xl">WhatsApp realtime moderation</h1>
             <p className="mt-4 text-sm leading-7 text-slate-400 md:text-base">
-              Connect the bridge, authenticate the session, filter by live chat, and review incoming WhatsApp messages with risk scoring.
+              Review live feed activity, narrow the window, filter alerts by severity and status, and inspect bridge history without leaving the page.
             </p>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3 lg:w-[34rem]">
-            <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
-              <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Session</p>
-              <p className={`mt-2 text-sm font-medium ${connected ? 'text-emerald-300' : 'text-amber-300'}`}>
-                {status?.status ?? 'unknown'}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
-              <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Bridge health</p>
-              <p className={`mt-2 text-sm font-medium ${bridgeHealth?.reachable ? 'text-emerald-300' : 'text-rose-300'}`}>
-                {bridgeHealth?.reachable ? (bridgeHealth.status ?? 'reachable') : 'offline'}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
-              <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Live chats</p>
-              <p className="mt-2 text-sm font-medium text-white">{chats.length}</p>
-            </div>
+          <div className="flex flex-col items-start gap-3 lg:items-end">
+            <button
+              onClick={refreshNow}
+              disabled={isRefreshing}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-3 text-sm font-medium text-white transition hover:bg-white/[0.08] disabled:opacity-60"
+            >
+              <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+              {isRefreshing ? 'Refreshing...' : 'Refresh now'}
+            </button>
+            <p className="text-xs text-slate-400">{lastUpdatedLabel(lastUpdated)}</p>
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <input
+            type="datetime-local"
+            value={dateFrom}
+            onChange={(event) => setDateFrom(event.target.value)}
+            className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-500/30"
+          />
+          <input
+            type="datetime-local"
+            value={dateTo}
+            onChange={(event) => setDateTo(event.target.value)}
+            className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-500/30"
+          />
+          <select
+            value={severityFilter}
+            onChange={(event) => setSeverityFilter(event.target.value)}
+            className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-500/30"
+          >
+            <option value="">All severities</option>
+            <option value="High">High</option>
+            <option value="Medium">Medium</option>
+            <option value="Low">Low</option>
+          </select>
+          <select
+            value={alertStatusFilter}
+            onChange={(event) => setAlertStatusFilter(event.target.value)}
+            className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-500/30"
+          >
+            <option value="">All alert statuses</option>
+            <option value="open">Open</option>
+            <option value="acknowledged">Acknowledged</option>
+            <option value="resolved">Resolved</option>
+          </select>
+          <div className="flex gap-3">
+            <button
+              onClick={() => setFlaggedOnly((current) => !current)}
+              className={`min-h-11 flex-1 rounded-2xl border px-4 py-3 text-sm transition ${flaggedOnly ? 'border-rose-500/25 bg-rose-500/10 text-rose-300' : 'border-white/8 bg-slate-950/60 text-slate-300 hover:bg-slate-950/80'}`}
+            >
+              {flaggedOnly ? 'Flagged only' : 'All messages'}
+            </button>
+            <button
+              onClick={resetFilters}
+              className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-slate-300 transition hover:bg-slate-950/80"
+            >
+              Clear
+            </button>
           </div>
         </div>
       </section>
+
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.3)]">
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Backend status</p>
+          <p className={`mt-3 text-2xl font-semibold ${healthSummary?.status === 'attention' ? 'text-amber-300' : 'text-emerald-300'}`}>
+            {healthSummary?.status ?? 'unknown'}
+          </p>
+          <p className="mt-2 text-xs text-slate-400">
+            {healthSummary?.attention_required ? 'One or more operational checks need review.' : 'Bridge and live monitoring look stable.'}
+          </p>
+        </div>
+        <div className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.3)]">
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Bridge ops</p>
+          <p className="mt-3 text-2xl font-semibold text-white">
+            {healthSummary?.bridge_ops.current_state.status ?? 'unknown'}
+          </p>
+          <p className="mt-2 text-xs text-slate-400">
+            {healthSummary?.bridge_ops.recent_event_count ?? 0} events | {healthSummary?.bridge_ops.recent_snapshot_count ?? 0} snapshots
+          </p>
+        </div>
+        <div className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.3)]">
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Live alerts</p>
+          <p className="mt-3 text-2xl font-semibold text-white">
+            {healthSummary?.live_ops.live_summary.open_alerts ?? 0}
+          </p>
+          <p className="mt-2 text-xs text-slate-400">
+            {healthSummary?.live_ops.recent_alert_count ?? 0} recent alerts | {healthSummary?.live_ops.recent_flagged_message_count ?? 0} flagged messages
+          </p>
+        </div>
+        <div className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.3)]">
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Risky chats</p>
+          <p className="mt-3 text-2xl font-semibold text-white">
+            {healthSummary?.live_ops.flagged_chat_count ?? 0}
+          </p>
+          <p className="mt-2 text-xs text-slate-400">
+            {healthSummary?.live_ops.high_risk_chat_count ?? 0} high-risk chats in the recent window
+          </p>
+        </div>
+      </section>
+
+      {error && (
+        <div className="rounded-[24px] border border-rose-500/20 bg-rose-500/10 p-4 text-sm text-rose-300">
+          {error}
+        </div>
+      )}
 
       <div className="grid gap-6 xl:grid-cols-[0.78fr_1.22fr]">
         <section className="space-y-6">
@@ -239,7 +567,13 @@ export default function RealtimeMonitor() {
               <p className="text-sm text-slate-400">Current status</p>
               <p className="mt-3 text-2xl font-semibold capitalize text-white">{status?.status ?? 'unknown'}</p>
               {status?.reason && <p className="mt-2 text-sm leading-7 text-slate-400">{status.reason}</p>}
-              {bridgeHealth?.detail && <p className="mt-2 text-xs text-slate-500">{bridgeHealth.detail}</p>}
+              {(status?.bridge_detail || bridgeHealth?.detail) && (
+                <p className="mt-2 text-xs text-slate-500">{status?.bridge_detail || bridgeHealth?.detail}</p>
+              )}
+              {status?.connected_phone && (
+                <p className="mt-2 text-xs text-cyan-300">Connected account: {status.connected_phone}</p>
+              )}
+              <p className="mt-3 text-xs text-slate-500">{lastUpdatedLabel(lastUpdated)}</p>
             </div>
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row">
@@ -255,12 +589,6 @@ export default function RealtimeMonitor() {
                 Run bridge manually: <code className="text-slate-200">cd whatsapp && npm run dev</code>
               </div>
             </div>
-
-            {error && (
-              <div className="mt-4 rounded-[22px] border border-rose-500/20 bg-rose-500/8 p-4 text-sm text-rose-300">
-                {error}
-              </div>
-            )}
           </div>
 
           <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
@@ -277,117 +605,257 @@ export default function RealtimeMonitor() {
             <div className="mt-5 flex min-h-[20rem] items-center justify-center rounded-[24px] border border-dashed border-white/10 bg-slate-950/60 p-6 text-center">
               {qrImage ? (
                 <img src={qrImage} alt="WhatsApp QR code" className="rounded-[20px] bg-white p-3 shadow-lg" />
+              ) : isLoading ? (
+                <div className="max-w-sm">
+                  <p className="text-lg font-medium text-slate-200">Checking for an active QR code...</p>
+                  <p className="mt-3 text-sm leading-7 text-slate-400">
+                    The current bridge state will appear here once the first status request completes.
+                  </p>
+                </div>
               ) : (
                 <div className="max-w-sm">
-                  <p className="text-lg font-medium text-slate-200">QR code not available yet</p>
+                  <p className="text-lg font-medium text-slate-200">QR code not available</p>
                   <p className="mt-3 text-sm leading-7 text-slate-400">
-                    When the bridge enters `qr_required` state, the pairing code will appear here.
+                    When the bridge enters the <code>qr_required</code> state, the pairing code will appear here.
                   </p>
                 </div>
               )}
             </div>
 
             {status?.qr_updated_at && (
-              <p className="mt-3 text-xs text-slate-500">Last QR update: {new Date(status.qr_updated_at).toLocaleString()}</p>
+              <p className="mt-3 text-xs text-slate-500">Last QR update: {formatDateTime(status.qr_updated_at)}</p>
             )}
           </div>
 
           <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
             <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">LIVE CHATS</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">Monitored conversations</h2>
-            <div className="mt-5 space-y-3">
+            <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+              <input
+                value={chatSearch}
+                onChange={(event) => setChatSearch(event.target.value)}
+                placeholder="Search chat name or type"
+                className="min-h-11 flex-1 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-500/30"
+              />
               <button
                 onClick={() => setSelectedChatId(null)}
-                className={`w-full rounded-[22px] border px-4 py-4 text-left transition ${selectedChatId === null ? 'border-cyan-500/25 bg-cyan-500/10' : 'border-white/8 bg-slate-950/55 hover:bg-slate-950/70'}`}
+                className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-slate-300 transition hover:bg-slate-950/80"
               >
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="font-medium text-white">All live chats</p>
-                    <p className="mt-1 text-xs text-slate-400">Aggregate feed across all WhatsApp live conversations</p>
-                  </div>
-                  <span className="rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-xs text-slate-300">
-                    {messages.length} visible
-                  </span>
-                </div>
+                View all
               </button>
+            </div>
 
-              {chats.map((chat) => (
-                <button
-                  key={chat.id}
-                  onClick={() => setSelectedChatId(chat.id)}
-                  className={`w-full rounded-[22px] border px-4 py-4 text-left transition ${selectedChatId === chat.id ? 'border-cyan-500/25 bg-cyan-500/10' : 'border-white/8 bg-slate-950/55 hover:bg-slate-950/70'}`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium text-white">{chat.chat_name}</p>
-                      <p className="mt-1 text-xs text-slate-400">
-                        {chat.message_count} messages • {chat.flagged_messages} flagged
-                      </p>
-                      {chat.last_message_at && (
-                        <p className="mt-1 text-xs text-slate-500">
-                          Last activity: {new Date(chat.last_message_at).toLocaleString()}
-                        </p>
-                      )}
-                    </div>
-                    <span className={`rounded-full px-3 py-1.5 text-xs ${chat.unsafe_percentage > 20 ? 'border border-rose-500/20 bg-rose-500/10 text-rose-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
-                      {chat.unsafe_percentage.toFixed(1)}%
-                    </span>
-                  </div>
-                </button>
-              ))}
-
-              {chats.length === 0 && (
+            <div className="mt-5 space-y-3">
+              {isLoading ? (
                 <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-sm text-slate-400">
-                  No live WhatsApp chats stored yet. Connect the bridge and wait for incoming messages.
+                  Loading live chats...
                 </div>
+              ) : filteredChats.length === 0 ? (
+                <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-sm text-slate-400">
+                  No chats match the current filters. Clear the search or wait for more live activity.
+                </div>
+              ) : (
+                filteredChats.map((chat) => (
+                  <button
+                    key={chat.id}
+                    onClick={() => setSelectedChatId(chat.id)}
+                    className={`w-full rounded-[22px] border px-4 py-4 text-left transition ${selectedChatId === chat.id ? 'border-cyan-500/25 bg-cyan-500/10' : 'border-white/8 bg-slate-950/55 hover:bg-slate-950/70'}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-white">{chat.chat_name}</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          {(chat.chat_type ?? 'chat').toUpperCase()} | {chat.message_count} messages | {chat.flagged_messages} flagged
+                        </p>
+                        {chat.latest_message_preview && (
+                          <p className="mt-1 truncate text-xs text-slate-500">{chat.latest_message_preview}</p>
+                        )}
+                        {chat.last_message_at && (
+                          <p className="mt-1 text-xs text-slate-500">
+                            Last activity: {formatDateTime(chat.last_message_at)}
+                          </p>
+                        )}
+                      </div>
+                      <span className={`rounded-full px-3 py-1.5 text-xs ${chat.unsafe_percentage > 20 ? 'border border-rose-500/20 bg-rose-500/10 text-rose-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
+                        {chat.unsafe_percentage.toFixed(1)}%
+                      </span>
+                    </div>
+                  </button>
+                ))
               )}
+            </div>
+          </div>
+
+          <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+            <div className="flex items-center gap-3">
+              <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+                <History className="h-5 w-5 text-cyan-300" />
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">BRIDGE HISTORY</p>
+                <h2 className="mt-1 text-2xl font-semibold text-white">Events and snapshots</h2>
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-4 lg:grid-cols-2">
+              <div className="rounded-[22px] border border-white/8 bg-slate-950/55 p-4">
+                <p className="text-sm font-medium text-white">Recent events</p>
+                <div className="mt-4 space-y-3">
+                  {bridgeEvents.length === 0 ? (
+                    <p className="text-sm text-slate-400">No bridge events match the current date range.</p>
+                  ) : (
+                    bridgeEvents.slice(0, 4).map((event) => (
+                      <div key={event.id} className="rounded-2xl border border-white/6 bg-white/[0.03] p-3">
+                        <p className="text-sm font-medium text-slate-100">{event.event_type}</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          {(event.status ?? 'unknown').toUpperCase()} | {formatDateTime(event.created_at)}
+                        </p>
+                        {event.detail && <p className="mt-2 text-xs leading-6 text-slate-500">{event.detail}</p>}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[22px] border border-white/8 bg-slate-950/55 p-4">
+                <p className="text-sm font-medium text-white">State snapshots</p>
+                <div className="mt-4 space-y-3">
+                  {bridgeSnapshots.length === 0 ? (
+                    <p className="text-sm text-slate-400">No bridge snapshots match the current date range.</p>
+                  ) : (
+                    bridgeSnapshots.slice(0, 4).map((snapshot) => (
+                      <div key={snapshot.id} className="rounded-2xl border border-white/6 bg-white/[0.03] p-3">
+                        <p className="text-sm font-medium text-slate-100">{snapshot.status ?? 'unknown'}</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          {(snapshot.bridge_status ?? 'unknown').toUpperCase()} | {formatDateTime(snapshot.created_at)}
+                        </p>
+                        <p className="mt-2 text-xs leading-6 text-slate-500">
+                          {snapshot.reason || snapshot.bridge_detail || 'No extra snapshot detail recorded.'}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </section>
 
-        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">LIVE FEED</p>
-              <h2 className="mt-2 flex items-center gap-2 text-2xl font-semibold text-white">
-                <RadioTower className="h-5 w-5 text-cyan-300" />
-                {selectedChat ? selectedChat.chat_name : 'Incoming messages'}
-              </h2>
+        <section className="space-y-6">
+          <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">LIVE FEED</p>
+                <h2 className="mt-2 flex items-center gap-2 text-2xl font-semibold text-white">
+                  <RadioTower className="h-5 w-5 text-cyan-300" />
+                  {selectedChat ? selectedChat.chat_name : 'Incoming messages'}
+                </h2>
+              </div>
+              <div className="flex items-center gap-3">
+                {selectedChat && (
+                  <Link
+                    to={`/results/${selectedChat.id}`}
+                    className="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm text-cyan-300 transition hover:bg-cyan-500/15"
+                  >
+                    Open report
+                  </Link>
+                )}
+                <div className="rounded-full border border-white/8 bg-white/[0.03] px-4 py-2 text-sm text-slate-300">
+                  {filteredMessages.length} recent message(s)
+                </div>
+              </div>
             </div>
-            <div className="rounded-full border border-white/8 bg-white/[0.03] px-4 py-2 text-sm text-slate-300">
-              {messages.length} recent message(s)
+
+            <div className="mt-5 space-y-3">
+              {isLoading ? (
+                <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-6 text-sm leading-7 text-slate-400">
+                  Loading live feed...
+                </div>
+              ) : filteredMessages.length === 0 ? (
+                <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-6 text-sm leading-7 text-slate-400">
+                  No live messages match the current filters. Adjust the date range, severity filters, or wait for new activity.
+                </div>
+              ) : (
+                filteredMessages.map((message) => (
+                  <article key={message.id} className="rounded-[22px] border border-white/8 bg-slate-950/55 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-medium text-white">{message.sender_name || message.sender}</p>
+                          <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-slate-400">
+                            {message.chat_name}
+                          </span>
+                        </div>
+                        <p className="mt-3 text-sm leading-7 text-slate-300">{message.message}</p>
+                        <p className="mt-3 text-xs text-slate-500">
+                          {formatDateTime(message.timestamp)} | {message.label ?? 'unclassified'}
+                        </p>
+                      </div>
+                      <span className={`rounded-full border px-3 py-1.5 text-xs ${scoreTone(message.risk_score)}`}>
+                        {(message.risk_score ?? 0).toFixed(1)} risk
+                      </span>
+                    </div>
+                  </article>
+                ))
+              )}
             </div>
           </div>
 
-          <div className="mt-5 space-y-3">
-            {messages.length === 0 ? (
-              <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-6 text-sm leading-7 text-slate-400">
-                No live messages yet. After the bridge connects, send a test WhatsApp message to populate this feed.
+          <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">LIVE ALERTS</p>
+                <h2 className="mt-2 flex items-center gap-2 text-2xl font-semibold text-white">
+                  <BellRing className="h-5 w-5 text-cyan-300" />
+                  Filtered alert queue
+                </h2>
               </div>
-            ) : (
-              messages.map((message) => (
-                <div key={message.id} className="rounded-[22px] border border-white/6 bg-slate-950/60 p-4 transition hover:border-white/10">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div className="min-w-0">
-                      <Link to={`/results/${message.chat_id}`} className="font-semibold text-white transition hover:text-cyan-300">
-                        {message.chat_name}
-                      </Link>
-                      <p className="mt-1 text-sm text-slate-400">{message.sender}</p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 text-xs sm:justify-end">
-                      <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 font-medium ${(message.risk_score ?? 0) > 50 ? 'border border-rose-500/20 bg-rose-500/10 text-rose-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
-                        {(message.risk_score ?? 0) > 50 ? <ShieldAlert className="h-3.5 w-3.5" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                        {message.label ?? 'Safe'} {(message.risk_score ?? 0).toFixed(1)}
-                      </span>
-                      {message.timestamp && (
-                        <span className="text-slate-500">{new Date(message.timestamp).toLocaleString()}</span>
-                      )}
-                    </div>
-                  </div>
-                  <p className="mt-3 text-sm leading-7 text-slate-100">{message.message}</p>
+              <p className="text-xs text-slate-400">
+                Severity: {severityFilter || 'All'} | Status: {alertStatusFilter || 'All'}
+              </p>
+            </div>
+
+            <div className="mt-5 space-y-3">
+              {isLoading ? (
+                <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-6 text-sm leading-7 text-slate-400">
+                  Loading alert queue...
                 </div>
-              ))
-            )}
+              ) : alerts.length === 0 ? (
+                <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-6 text-sm leading-7 text-slate-400">
+                  No alerts match the current severity, status, chat, and date filters.
+                </div>
+              ) : (
+                alerts.map((alert) => (
+                  <article key={alert.id} className="rounded-[22px] border border-white/8 bg-slate-950/55 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-medium text-white">{alert.chat_name}</p>
+                          <span className={`rounded-full border px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] ${alert.severity === 'High' ? 'border-rose-500/20 bg-rose-500/10 text-rose-300' : 'border-amber-500/20 bg-amber-500/10 text-amber-300'}`}>
+                            {alert.severity}
+                          </span>
+                          <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-slate-400">
+                            {alert.status}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm text-slate-400">{alert.sender} | {formatDateTime(alert.created_at)}</p>
+                        <p className="mt-3 text-sm leading-7 text-slate-300">{alert.message}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {(alert.risk_score ?? 0) > 50 ? (
+                          <ShieldAlert className="h-5 w-5 text-rose-300" />
+                        ) : (
+                          <ShieldCheck className="h-5 w-5 text-emerald-300" />
+                        )}
+                        <span className={`rounded-full border px-3 py-1.5 text-xs ${scoreTone(alert.risk_score)}`}>
+                          {(alert.risk_score ?? 0).toFixed(1)} risk
+                        </span>
+                      </div>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
           </div>
         </section>
       </div>

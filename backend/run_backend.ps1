@@ -1,9 +1,18 @@
 #!/usr/bin/env pwsh
-# Activate virtual environment (if created as .venv) and run the backend
-if (Test-Path -Path .\.venv\Scripts\Activate.ps1) {
-    Write-Host "Activating .venv..."
-    & .\.venv\Scripts\Activate.ps1
+
+$root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+Set-Location $root
+
+$pythonExe = Join-Path $root ".venv\Scripts\python.exe"
+if (-not (Test-Path $pythonExe)) {
+    throw "Expected virtual environment python at $pythonExe"
 }
 
-Write-Host "Starting backend (uvicorn) on :8000..."
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+Write-Host "Applying backend migrations..."
+& $pythonExe "$root\backend\scripts\migrate.py"
+if ($LASTEXITCODE -ne 0) {
+    throw "Migration step failed."
+}
+
+Write-Host "Starting backend on http://127.0.0.1:8000 ..."
+& $pythonExe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
