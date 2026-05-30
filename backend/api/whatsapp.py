@@ -3,7 +3,7 @@ import json
 import os
 from urllib import error, request
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload
 
@@ -287,9 +287,28 @@ def _serialize_live_message(message: models.Message, chat: models.Chat) -> schem
         message=message.message,
         external_message_id=message.external_message_id,
         source=message.source,
+        direction=message.direction,
+        is_from_me=bool(message.is_from_me),
         timestamp=message.timestamp,
         risk_score=message.risk_score,
         label=message.label,
+    )
+
+
+def _normalize_chat_key(value: str | None) -> str:
+    return "".join(ch for ch in str(value or "").strip().lower() if ch.isalnum() or ch in {"-", "_"})
+
+
+def _serialize_monitored_contact(contact: models.MonitoredContact) -> schemas.MonitoredContactResponse:
+    return schemas.MonitoredContactResponse(
+        id=contact.id,
+        user_id=contact.user_id,
+        contact_name=contact.contact_name,
+        phone_number=contact.phone_number,
+        chat_key=contact.chat_key or contact.phone_number or "",
+        chat_type=contact.chat_type or "direct",
+        is_active=bool(contact.is_active),
+        created_at=contact.created_at,
     )
 
 
@@ -457,6 +476,8 @@ def _serialize_message_base(message: models.Message) -> schemas.MessageBase:
         message=message.message,
         external_message_id=message.external_message_id,
         source=message.source,
+        direction=message.direction,
+        is_from_me=bool(message.is_from_me),
         timestamp=message.timestamp,
         risk_score=message.risk_score,
         label=message.label,
@@ -752,6 +773,105 @@ def get_bridge_ops_summary(
     )
 
 
+@router.get("/monitored-contacts", response_model=schemas.MonitoredContactListResponse)
+def list_monitored_contacts(
+    active_only: bool = Query(default=False),
+    chat_type: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.MonitoredContact).order_by(models.MonitoredContact.is_active.desc(), models.MonitoredContact.contact_name.asc())
+    if active_only:
+        query = query.filter(models.MonitoredContact.is_active.is_(True))
+    if chat_type:
+        query = query.filter(models.MonitoredContact.chat_type == chat_type)
+    contacts = query.all()
+    return schemas.MonitoredContactListResponse(
+        total=len(contacts),
+        contacts=[_serialize_monitored_contact(contact) for contact in contacts],
+    )
+
+
+@router.post("/monitored-contacts", response_model=schemas.MonitoredContactResponse)
+def create_monitored_contact(payload: schemas.MonitoredContactCreateRequest, db: Session = Depends(get_db)):
+    normalized_key = _normalize_chat_key(payload.chat_key)
+    if not normalized_key:
+        raise HTTPException(status_code=400, detail="Chat key is required")
+
+    existing = (
+        db.query(models.MonitoredContact)
+        .filter(models.MonitoredContact.chat_key == normalized_key, models.MonitoredContact.chat_type == payload.chat_type)
+        .first()
+    )
+    if existing:
+        existing.contact_name = payload.contact_name.strip()
+        existing.phone_number = normalized_key
+        existing.is_active = payload.is_active
+        db.commit()
+        db.refresh(existing)
+        return _serialize_monitored_contact(existing)
+
+    contact = models.MonitoredContact(
+        contact_name=payload.contact_name.strip(),
+        phone_number=normalized_key,
+        chat_key=normalized_key,
+        chat_type=payload.chat_type,
+        is_active=payload.is_active,
+    )
+    db.add(contact)
+    db.commit()
+    db.refresh(contact)
+    return _serialize_monitored_contact(contact)
+
+
+@router.patch("/monitored-contacts/{contact_id}", response_model=schemas.MonitoredContactResponse)
+def update_monitored_contact(
+    contact_id: int,
+    payload: schemas.MonitoredContactUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    contact = db.query(models.MonitoredContact).filter(models.MonitoredContact.id == contact_id).first()
+    if contact is None:
+        raise HTTPException(status_code=404, detail="Monitored contact not found")
+
+    if payload.contact_name is not None:
+        contact.contact_name = payload.contact_name.strip()
+    if payload.chat_key is not None:
+        normalized_key = _normalize_chat_key(payload.chat_key)
+        if not normalized_key:
+            raise HTTPException(status_code=400, detail="Chat key is required")
+        duplicate = (
+            db.query(models.MonitoredContact)
+            .filter(
+                models.MonitoredContact.id != contact.id,
+                models.MonitoredContact.chat_key == normalized_key,
+                models.MonitoredContact.chat_type == (payload.chat_type or contact.chat_type),
+            )
+            .first()
+        )
+        if duplicate:
+            raise HTTPException(status_code=409, detail="A monitor for this chat already exists")
+        contact.chat_key = normalized_key
+        contact.phone_number = normalized_key
+    if payload.chat_type is not None:
+        contact.chat_type = payload.chat_type
+    if payload.is_active is not None:
+        contact.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(contact)
+    return _serialize_monitored_contact(contact)
+
+
+@router.delete("/monitored-contacts/{contact_id}")
+def delete_monitored_contact(contact_id: int, db: Session = Depends(get_db)):
+    contact = db.query(models.MonitoredContact).filter(models.MonitoredContact.id == contact_id).first()
+    if contact is None:
+        raise HTTPException(status_code=404, detail="Monitored contact not found")
+    db.delete(contact)
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/messages/incoming")
 async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db: Session = Depends(get_db)):
     chat = _get_or_create_live_chat(db, payload)
@@ -773,6 +893,8 @@ async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db:
             "label": existing.label,
             "risk_score": existing.risk_score,
             "duplicate": True,
+            "live_message": _serialize_live_message(existing, chat).model_dump(mode="json"),
+            "chat": _serialize_chat_summary(db, chat).model_dump(mode="json"),
         }
 
     analysis = ai_engine.analyze_message(payload.text)
@@ -785,6 +907,8 @@ async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db:
         content=payload.text,
         external_message_id=payload.message_id,
         source="whatsapp_bridge",
+        direction=payload.direction or ("outgoing" if payload.is_from_me else "incoming"),
+        is_from_me=payload.is_from_me,
         raw_payload=json.dumps(payload.raw_payload) if payload.raw_payload else None,
         timestamp=_resolve_timestamp(payload.timestamp),
         risk_score=analysis["risk_score"],
@@ -843,6 +967,8 @@ async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db:
         "label": analysis["label"],
         "risk_score": analysis["risk_score"],
         "duplicate": False,
+        "live_message": live_message.model_dump(mode="json"),
+        "chat": chat_summary.model_dump(mode="json"),
     }
 
 

@@ -48,6 +48,8 @@ class IncomingWhatsAppMessage(BaseModel):
     sender_name: Optional[str] = None
     text: str
     timestamp: Optional[int] = None
+    direction: Optional[str] = None
+    is_from_me: bool = False
     raw_payload: Optional[dict] = None
 
 class LiveFeedMessage(BaseModel):
@@ -60,6 +62,8 @@ class LiveFeedMessage(BaseModel):
     message: str
     external_message_id: Optional[str] = None
     source: Optional[str] = None
+    direction: Optional[str] = None
+    is_from_me: bool = False
     timestamp: Optional[datetime] = None
     risk_score: Optional[float] = None
     label: Optional[str] = None
@@ -92,6 +96,36 @@ class WhatsAppChatListResponse(BaseModel):
     limit: int = 0
     offset: int = 0
     chats: List[WhatsAppChatSummary]
+
+
+class MonitoredContactCreateRequest(BaseModel):
+    contact_name: str
+    chat_key: str
+    chat_type: str = "direct"
+    is_active: bool = True
+
+
+class MonitoredContactUpdateRequest(BaseModel):
+    contact_name: Optional[str] = None
+    chat_key: Optional[str] = None
+    chat_type: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class MonitoredContactResponse(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    contact_name: str
+    phone_number: Optional[str] = None
+    chat_key: str
+    chat_type: str = "direct"
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+
+
+class MonitoredContactListResponse(BaseModel):
+    total: int = 0
+    contacts: List[MonitoredContactResponse]
 
 
 class WhatsAppChatSummaryAggregateResponse(BaseModel):
@@ -258,6 +292,8 @@ class MessageBase(BaseModel):
     message: str
     external_message_id: Optional[str] = None
     source: Optional[str] = None
+    direction: Optional[str] = None
+    is_from_me: bool = False
     timestamp: Optional[datetime] = None
     risk_score: Optional[float] = None
     label: Optional[str] = None

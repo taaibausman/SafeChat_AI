@@ -7,6 +7,7 @@ export const config = {
   fastApiUrl: process.env.FASTAPI_URL || "http://127.0.0.1:8000",
   authPath: process.env.WHATSAPP_AUTH_PATH || "./auth",
   controlPort: Number(process.env.WHATSAPP_CONTROL_PORT || 3011),
+  monitorRefreshMs: Number(process.env.WHATSAPP_MONITOR_REFRESH_MS || 15000),
 };
 
 function loadDotEnv() {

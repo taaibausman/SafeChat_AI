@@ -90,6 +90,8 @@ class Message(Base):
     content = Column(Text, nullable=True)
     external_message_id = Column(String, index=True, nullable=True)
     source = Column(String, nullable=True)
+    direction = Column(String, nullable=True)
+    is_from_me = Column(Boolean, default=False)
     raw_payload = Column(Text, nullable=True)
     timestamp = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -177,12 +179,19 @@ class ImageScan(Base):
 
 class MonitoredContact(Base):
     __tablename__ = "monitored_contacts"
+    __table_args__ = (
+        Index("ix_monitored_contacts_user_id_is_active", "user_id", "is_active"),
+        Index("ix_monitored_contacts_chat_key", "chat_key"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     contact_name = Column(String)
-    phone_number = Column(String)
+    phone_number = Column(String, nullable=True)
+    chat_key = Column(String, nullable=True)
+    chat_type = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     user = relationship("User", back_populates="monitored_contacts")
 

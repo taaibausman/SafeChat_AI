@@ -68,6 +68,7 @@ def test_schema_migrations_table_exists():
         }
         assert "20260530_001_whatsapp_live_schema" in versions
         assert "20260530_002_core_database_alignment" in versions
+        assert "20260530_003_whatsapp_monitor_scope" in versions
     finally:
         db.close()
 
@@ -502,6 +503,90 @@ def test_whatsapp_direct_chat_naming_and_aggregate_updates():
     older_summary = older_summary_resp.json()
     assert older_summary["total_chats"] == 0
     assert older_summary["total_messages"] == 0
+
+
+def test_monitored_contact_crud_and_outgoing_message_fields():
+    create_resp = client.post(
+        "/api/whatsapp/monitored-contacts",
+        json={
+            "contact_name": "Family Group",
+            "chat_key": "family-group-1",
+            "chat_type": "group",
+            "is_active": True,
+        },
+    )
+    assert create_resp.status_code == 200
+    created = create_resp.json()
+    assert created["chat_key"] == "family-group-1"
+    assert created["chat_type"] == "group"
+    assert created["is_active"] is True
+
+    duplicate_resp = client.post(
+        "/api/whatsapp/monitored-contacts",
+        json={
+            "contact_name": "Family Group Updated",
+            "chat_key": "family-group-1",
+            "chat_type": "group",
+            "is_active": False,
+        },
+    )
+    assert duplicate_resp.status_code == 200
+    duplicate = duplicate_resp.json()
+    assert duplicate["id"] == created["id"]
+    assert duplicate["contact_name"] == "Family Group Updated"
+    assert duplicate["is_active"] is False
+
+    list_resp = client.get("/api/whatsapp/monitored-contacts")
+    assert list_resp.status_code == 200
+    assert any(contact["id"] == created["id"] for contact in list_resp.json()["contacts"])
+
+    active_resp = client.get("/api/whatsapp/monitored-contacts?active_only=true")
+    assert active_resp.status_code == 200
+    assert all(contact["is_active"] is True for contact in active_resp.json()["contacts"])
+
+    patch_resp = client.patch(
+        f"/api/whatsapp/monitored-contacts/{created['id']}",
+        json={"is_active": True, "contact_name": "Family Group Final"},
+    )
+    assert patch_resp.status_code == 200
+    patched = patch_resp.json()
+    assert patched["is_active"] is True
+    assert patched["contact_name"] == "Family Group Final"
+
+    incoming_resp = client.post(
+        "/api/whatsapp/messages/incoming",
+        json={
+            "message_id": "outgoing-1",
+            "group_id": "family-group-1",
+            "group_name": "Family Group Final",
+            "chat_type": "group",
+            "sender": "923001234567",
+            "sender_name": "You",
+            "text": "Outgoing bridge test message.",
+            "timestamp": 1780036100,
+            "direction": "outgoing",
+            "is_from_me": True,
+        },
+    )
+    assert incoming_resp.status_code == 200
+    body = incoming_resp.json()
+    assert body["duplicate"] is False
+    assert body["live_message"]["direction"] == "outgoing"
+    assert body["live_message"]["is_from_me"] is True
+    assert body["chat"]["chat_name"] == "Family Group Final"
+
+    db = SessionLocal()
+    try:
+        message = db.query(models.Message).filter(models.Message.id == body["message_id"]).first()
+        assert message is not None
+        assert message.direction == "outgoing"
+        assert message.is_from_me is True
+    finally:
+        db.close()
+
+    delete_resp = client.delete(f"/api/whatsapp/monitored-contacts/{created['id']}")
+    assert delete_resp.status_code == 200
+    assert delete_resp.json()["ok"] is True
 
 
 def test_whatsapp_alert_created_for_high_risk_message():

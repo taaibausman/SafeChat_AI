@@ -48,17 +48,18 @@ class TestMigrations(unittest.TestCase):
             versions = [row[0] for row in result.fetchall()]
             self.assertIn("20260530_001_whatsapp_live_schema", versions)
             self.assertIn("20260530_002_core_database_alignment", versions)
+            self.assertIn("20260530_003_whatsapp_monitor_scope", versions)
 
             result = conn.execute(
                 text(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                    "('users', 'chat_participants', 'moderation_logs', 'image_scans')"
+                    "('users', 'chat_participants', 'moderation_logs', 'image_scans', 'monitored_contacts')"
                 )
             )
             created_tables = {row[0] for row in result.fetchall()}
             self.assertEqual(
                 created_tables,
-                {"users", "chat_participants", "moderation_logs", "image_scans"},
+                {"users", "chat_participants", "moderation_logs", "image_scans", "monitored_contacts"},
             )
 
             result = conn.execute(text("PRAGMA table_info(messages)"))
@@ -66,6 +67,8 @@ class TestMigrations(unittest.TestCase):
             self.assertIn("content", message_columns)
             self.assertIn("is_flagged", message_columns)
             self.assertIn("toxicity_score", message_columns)
+            self.assertIn("direction", message_columns)
+            self.assertIn("is_from_me", message_columns)
 
     def test_run_migrations_twice(self):
         self._create_legacy_tables()
@@ -75,7 +78,7 @@ class TestMigrations(unittest.TestCase):
 
         with self.engine.connect() as conn:
             result = conn.execute(text("SELECT COUNT(*) FROM schema_migrations"))
-            self.assertEqual(result.scalar(), 2)
+            self.assertEqual(result.scalar(), 3)
 
     def test_migrate_main_runs_metadata_and_migrations(self):
         with patch.object(migrate_script.Base.metadata, "create_all") as create_all_mock, patch.object(

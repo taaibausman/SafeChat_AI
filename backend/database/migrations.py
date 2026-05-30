@@ -330,7 +330,70 @@ def _migration_20260530_002_core_database_alignment(engine: Engine) -> None:
     )
 
 
+def _migration_20260530_003_whatsapp_monitor_scope(engine: Engine) -> None:
+    if _has_table(engine, "messages"):
+        _ensure_columns(
+            engine,
+            "messages",
+            {
+                "direction": "VARCHAR",
+                "is_from_me": "BOOLEAN DEFAULT 0",
+            },
+        )
+
+    _create_table_if_missing(
+        engine,
+        "monitored_contacts",
+        """
+        CREATE TABLE monitored_contacts (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            contact_name VARCHAR NOT NULL,
+            phone_number VARCHAR,
+            chat_key VARCHAR,
+            chat_type VARCHAR DEFAULT 'direct',
+            is_active BOOLEAN DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users (id)
+        )
+        """,
+    )
+    _ensure_columns(
+        engine,
+        "monitored_contacts",
+        {
+            "phone_number": "VARCHAR",
+            "chat_key": "VARCHAR",
+            "chat_type": "VARCHAR DEFAULT 'direct'",
+            "is_active": "BOOLEAN DEFAULT 1",
+            "created_at": "DATETIME",
+        },
+    )
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE monitored_contacts
+                SET chat_key = COALESCE(chat_key, phone_number),
+                    phone_number = COALESCE(phone_number, chat_key),
+                    chat_type = COALESCE(chat_type, 'direct'),
+                    created_at = COALESCE(created_at, CURRENT_TIMESTAMP)
+                """
+            )
+        )
+
+    _ensure_indexes(
+        engine,
+        [
+            "CREATE INDEX IF NOT EXISTS ix_monitored_contacts_user_id_is_active ON monitored_contacts (user_id, is_active)",
+            "CREATE INDEX IF NOT EXISTS ix_monitored_contacts_chat_key ON monitored_contacts (chat_key)",
+        ],
+    )
+
+
 MIGRATIONS: list[tuple[str, MigrationFunc]] = [
     ("20260530_001_whatsapp_live_schema", _migration_20260530_001_whatsapp_live_schema),
     ("20260530_002_core_database_alignment", _migration_20260530_002_core_database_alignment),
+    ("20260530_003_whatsapp_monitor_scope", _migration_20260530_003_whatsapp_monitor_scope),
 ]

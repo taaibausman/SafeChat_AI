@@ -1,8 +1,9 @@
-export function normalizeIncomingMessage(eventMessage) {
+export function normalizeIncomingMessage(eventMessage, connectedAccountJid = null) {
   const remoteJid = eventMessage.key?.remoteJid;
   const isGroup = Boolean(remoteJid?.endsWith("@g.us"));
+  const isFromMe = Boolean(eventMessage.key?.fromMe);
 
-  if (!remoteJid || eventMessage.key?.fromMe || !eventMessage.message) {
+  if (!remoteJid || !eventMessage.message) {
     return null;
   }
 
@@ -11,7 +12,10 @@ export function normalizeIncomingMessage(eventMessage) {
     return null;
   }
 
-  const senderJid = eventMessage.key?.participant || remoteJid;
+  const senderJid = isFromMe
+    ? connectedAccountJid || eventMessage.key?.participant || remoteJid
+    : eventMessage.key?.participant || remoteJid;
+  const senderName = isFromMe ? "You" : eventMessage.pushName || cleanJid(senderJid);
 
   return {
     message_id: eventMessage.key?.id,
@@ -19,9 +23,11 @@ export function normalizeIncomingMessage(eventMessage) {
     group_name: isGroup ? cleanJid(remoteJid) : eventMessage.pushName || cleanJid(senderJid),
     chat_type: isGroup ? "group" : "direct",
     sender: cleanJid(senderJid),
-    sender_name: eventMessage.pushName || cleanJid(senderJid),
+    sender_name: senderName,
     text,
     timestamp: Number(eventMessage.messageTimestamp || Math.floor(Date.now() / 1000)),
+    direction: isFromMe ? "outgoing" : "incoming",
+    is_from_me: isFromMe,
     raw_payload: sanitizeEventMessage(eventMessage),
   };
 }

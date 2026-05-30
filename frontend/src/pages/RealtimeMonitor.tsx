@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import {
   BellRing,
   History,
@@ -8,10 +9,12 @@ import {
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
+  Target,
+  Trash2,
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { WS_BASE_URL, apiClient } from '../lib/api';
+import { BRIDGE_SOCKET_URL, WS_BASE_URL, apiClient } from '../lib/api';
 
 type WhatsAppStatus = {
   status: string;
@@ -35,6 +38,8 @@ type LiveMessage = {
   message: string;
   external_message_id?: string | null;
   source?: string | null;
+  direction?: string | null;
+  is_from_me?: boolean;
   timestamp?: string | null;
   risk_score?: number | null;
   label?: string | null;
@@ -136,6 +141,17 @@ type BridgeSnapshot = {
   created_at: string;
 };
 
+type MonitoredContact = {
+  id: number;
+  user_id?: number | null;
+  contact_name: string;
+  phone_number?: string | null;
+  chat_key: string;
+  chat_type: string;
+  is_active: boolean;
+  created_at?: string | null;
+};
+
 function toApiDate(value: string) {
   if (!value) return undefined;
   const parsed = new Date(value);
@@ -160,6 +176,32 @@ function scoreTone(score?: number | null) {
   return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
 }
 
+function mergeLiveMessage(current: LiveMessage[], payload: LiveMessage, selectedChatId: number | null, flaggedOnly: boolean) {
+  const matchesChat = selectedChatId === null || payload.chat_id === selectedChatId;
+  const matchesFlagged = !flaggedOnly || (payload.risk_score ?? 0) > 50;
+  if (!matchesChat || !matchesFlagged) {
+    return current;
+  }
+
+  const deduped = current.filter(
+    (item) =>
+      item.id !== payload.id &&
+      (!payload.external_message_id || item.external_message_id !== payload.external_message_id)
+  );
+  return [payload, ...deduped].slice(0, 100);
+}
+
+function mergeChatSummary(current: LiveChatSummary[], payload: LiveChatSummary) {
+  const next = current.some((item) => item.id === payload.id)
+    ? current.map((item) => (item.id === payload.id ? payload : item))
+    : [payload, ...current];
+  return next.sort((a, b) => {
+    const aTime = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
+    const bTime = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+    return bTime - aTime;
+  });
+}
+
 export default function RealtimeMonitor() {
   const [status, setStatus] = useState<WhatsAppStatus | null>(null);
   const [messages, setMessages] = useState<LiveMessage[]>([]);
@@ -167,6 +209,7 @@ export default function RealtimeMonitor() {
   const [alerts, setAlerts] = useState<LiveAlert[]>([]);
   const [bridgeEvents, setBridgeEvents] = useState<BridgeEvent[]>([]);
   const [bridgeSnapshots, setBridgeSnapshots] = useState<BridgeSnapshot[]>([]);
+  const [monitoredContacts, setMonitoredContacts] = useState<MonitoredContact[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<number | null>(null);
   const [bridgeHealth, setBridgeHealth] = useState<BridgeHealth | null>(null);
   const [healthSummary, setHealthSummary] = useState<BackendHealthSummary | null>(null);
@@ -180,7 +223,12 @@ export default function RealtimeMonitor() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
+  const [isSavingMonitor, setIsSavingMonitor] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [bridgeSocketState, setBridgeSocketState] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [monitorName, setMonitorName] = useState('');
+  const [monitorKey, setMonitorKey] = useState('');
+  const [monitorType, setMonitorType] = useState<'direct' | 'group'>('direct');
 
   const loadData = async (showSpinner = false) => {
     if (showSpinner) {
@@ -194,7 +242,7 @@ export default function RealtimeMonitor() {
       date_to: toApiDate(dateTo),
     };
 
-    const [statusResult, feedResult, chatResult, healthResult, opsResult, alertResult, eventResult, snapshotResult] = await Promise.allSettled([
+    const [statusResult, feedResult, chatResult, healthResult, opsResult, alertResult, eventResult, snapshotResult, monitoredResult] = await Promise.allSettled([
       apiClient.get('/api/whatsapp/status'),
       apiClient.get('/api/whatsapp/live-feed', {
         params: {
@@ -234,6 +282,7 @@ export default function RealtimeMonitor() {
           limit: 8,
         },
       }),
+      apiClient.get('/api/whatsapp/monitored-contacts'),
     ]);
 
     const nextErrors: string[] = [];
@@ -294,6 +343,13 @@ export default function RealtimeMonitor() {
       nextErrors.push('Bridge state history could not be loaded.');
     }
 
+    if (monitoredResult.status === 'fulfilled') {
+      setMonitoredContacts(monitoredResult.value.data.contacts ?? []);
+    } else {
+      setMonitoredContacts([]);
+      nextErrors.push('Monitor selection state could not be loaded.');
+    }
+
     setError(nextErrors.join(' '));
     setLastUpdated(new Date().toISOString());
     setIsLoading(false);
@@ -326,43 +382,13 @@ export default function RealtimeMonitor() {
 
         if (parsed.type === 'message') {
           const payload = parsed.payload as LiveMessage;
-          setChats((current) =>
-            current.map((item) => {
-              if (item.id !== payload.chat_id) return item;
-              const nextFlagged = item.flagged_messages + ((payload.risk_score ?? 0) > 50 ? 1 : 0);
-              const nextCount = item.message_count + 1;
-              return {
-                ...item,
-                message_count: nextCount,
-                flagged_messages: nextFlagged,
-                unsafe_percentage: nextCount ? (nextFlagged / nextCount) * 100 : 0,
-                last_message_at: payload.timestamp ?? item.last_message_at,
-                latest_message_preview: payload.message,
-              };
-            })
-          );
-
-          setMessages((current) => {
-            const matchesChat = selectedChatId === null || payload.chat_id === selectedChatId;
-            const matchesFlagged = !flaggedOnly || (payload.risk_score ?? 0) > 50;
-            if (!matchesChat || !matchesFlagged) return current;
-            return [payload, ...current].slice(0, 100);
-          });
+          setMessages((current) => mergeLiveMessage(current, payload, selectedChatId, flaggedOnly));
           return;
         }
 
         if (parsed.type === 'chat_updated') {
           const payload = parsed.payload as { chat: LiveChatSummary };
-          setChats((current) => {
-            const next = current.some((item) => item.id === payload.chat.id)
-              ? current.map((item) => (item.id === payload.chat.id ? payload.chat : item))
-              : [payload.chat, ...current];
-            return next.sort((a, b) => {
-              const aTime = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
-              const bTime = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
-              return bTime - aTime;
-            });
-          });
+          setChats((current) => mergeChatSummary(current, payload.chat));
         }
       } catch {
         setError('Received an invalid realtime event.');
@@ -376,6 +402,54 @@ export default function RealtimeMonitor() {
     return () => socket.close();
   }, [selectedChatId, flaggedOnly]);
 
+  useEffect(() => {
+    const socket = io(BRIDGE_SOCKET_URL, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      timeout: 5000,
+    });
+
+    socket.on('connect', () => {
+      setBridgeSocketState('connected');
+    });
+
+    socket.on('disconnect', () => {
+      setBridgeSocketState('disconnected');
+    });
+
+    socket.on('bridge_status', (payload: Partial<WhatsAppStatus>) => {
+      setStatus((current) => ({ ...(current ?? { status: 'unknown' }), ...payload }));
+    });
+
+    socket.on('monitored_contacts', (payload: { contacts?: MonitoredContact[] }) => {
+      setMonitoredContacts(payload.contacts ?? []);
+    });
+
+    socket.on('moderation_result', (payload: { live_message?: LiveMessage | null; chat?: LiveChatSummary | null }) => {
+      if (payload.chat) {
+        setChats((current) => mergeChatSummary(current, payload.chat as LiveChatSummary));
+      }
+      if (payload.live_message) {
+        setMessages((current) =>
+          mergeLiveMessage(current, payload.live_message as LiveMessage, selectedChatId, flaggedOnly)
+        );
+      }
+      setLastUpdated(new Date().toISOString());
+    });
+
+    socket.on('bridge_error', () => {
+      setError((current) => current || 'Bridge socket reported an operational error. Using fallback refresh where needed.');
+    });
+
+    socket.on('connect_error', () => {
+      setBridgeSocketState('disconnected');
+    });
+
+    return () => {
+      socket.close();
+    };
+  }, [selectedChatId, flaggedOnly]);
+
   const qrImage = status?.qr
     ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(status.qr)}`
     : '';
@@ -384,6 +458,10 @@ export default function RealtimeMonitor() {
   const selectedChat = useMemo(
     () => chats.find((chat) => chat.id === selectedChatId) ?? null,
     [chats, selectedChatId]
+  );
+  const monitoredKeySet = useMemo(
+    () => new Set(monitoredContacts.map((contact) => contact.chat_key)),
+    [monitoredContacts]
   );
 
   const filteredChats = useMemo(() => {
@@ -405,6 +483,75 @@ export default function RealtimeMonitor() {
 
   const refreshNow = async () => {
     await loadData(true);
+  };
+
+  const saveMonitor = async () => {
+    if (!monitorName.trim() || !monitorKey.trim()) {
+      setError('Monitor name and chat key are required.');
+      return;
+    }
+
+    try {
+      setIsSavingMonitor(true);
+      const response = await apiClient.post('/api/whatsapp/monitored-contacts', {
+        contact_name: monitorName.trim(),
+        chat_key: monitorKey.trim(),
+        chat_type: monitorType,
+        is_active: true,
+      });
+      const created = response.data as MonitoredContact;
+      setMonitoredContacts((current) => {
+        const next = current.filter((item) => item.id !== created.id);
+        return [created, ...next];
+      });
+      setMonitorName('');
+      setMonitorKey('');
+      setMonitorType('direct');
+      setError('');
+    } catch (saveError: any) {
+      setError(saveError?.response?.data?.detail || 'Could not save the monitored contact.');
+    } finally {
+      setIsSavingMonitor(false);
+    }
+  };
+
+  const toggleMonitor = async (contact: MonitoredContact) => {
+    try {
+      const response = await apiClient.patch(`/api/whatsapp/monitored-contacts/${contact.id}`, {
+        is_active: !contact.is_active,
+      });
+      const updated = response.data as MonitoredContact;
+      setMonitoredContacts((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    } catch {
+      setError('Could not update monitored contact state.');
+    }
+  };
+
+  const deleteMonitor = async (contactId: number) => {
+    try {
+      await apiClient.delete(`/api/whatsapp/monitored-contacts/${contactId}`);
+      setMonitoredContacts((current) => current.filter((item) => item.id !== contactId));
+    } catch {
+      setError('Could not delete monitored contact.');
+    }
+  };
+
+  const quickAddMonitor = async (chat: LiveChatSummary) => {
+    try {
+      const response = await apiClient.post('/api/whatsapp/monitored-contacts', {
+        contact_name: chat.chat_name,
+        chat_key: chat.external_chat_id || chat.chat_name,
+        chat_type: chat.chat_type || 'direct',
+        is_active: true,
+      });
+      const created = response.data as MonitoredContact;
+      setMonitoredContacts((current) => {
+        const next = current.filter((item) => item.id !== created.id);
+        return [created, ...next];
+      });
+    } catch (saveError: any) {
+      setError(saveError?.response?.data?.detail || 'Could not add this chat to the monitored list.');
+    }
   };
 
   const resetFilters = () => {
@@ -589,6 +736,9 @@ export default function RealtimeMonitor() {
                 Run bridge manually: <code className="text-slate-200">cd whatsapp && npm run dev</code>
               </div>
             </div>
+            <p className="mt-3 text-xs text-slate-500">
+              Bridge socket: {bridgeSocketState === 'connected' ? 'connected' : bridgeSocketState === 'connecting' ? 'connecting' : 'disconnected'}
+            </p>
           </div>
 
           <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
@@ -625,6 +775,86 @@ export default function RealtimeMonitor() {
             {status?.qr_updated_at && (
               <p className="mt-3 text-xs text-slate-500">Last QR update: {formatDateTime(status.qr_updated_at)}</p>
             )}
+          </div>
+
+          <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+            <div className="flex items-center gap-3">
+              <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+                <Target className="h-5 w-5 text-cyan-300" />
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">MONITOR SCOPE</p>
+                <h2 className="mt-1 text-2xl font-semibold text-white">Contacts and groups to watch</h2>
+              </div>
+            </div>
+
+            <p className="mt-4 text-sm leading-7 text-slate-400">
+              When this list is empty, the bridge forwards all chats. Once active entries exist, only matching direct chats and groups are analyzed.
+            </p>
+
+            <div className="mt-5 grid gap-3 md:grid-cols-[1.2fr_1.1fr_0.8fr_auto]">
+              <input
+                value={monitorName}
+                onChange={(event) => setMonitorName(event.target.value)}
+                placeholder="Display name"
+                className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-500/30"
+              />
+              <input
+                value={monitorKey}
+                onChange={(event) => setMonitorKey(event.target.value)}
+                placeholder="Chat key or phone number"
+                className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-500/30"
+              />
+              <select
+                value={monitorType}
+                onChange={(event) => setMonitorType(event.target.value as 'direct' | 'group')}
+                className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-500/30"
+              >
+                <option value="direct">Direct</option>
+                <option value="group">Group</option>
+              </select>
+              <button
+                onClick={saveMonitor}
+                disabled={isSavingMonitor}
+                className="min-h-11 rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-3 text-sm font-medium text-white transition hover:bg-white/[0.08] disabled:opacity-60"
+              >
+                {isSavingMonitor ? 'Saving...' : 'Add monitor'}
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-3">
+              {monitoredContacts.length === 0 ? (
+                <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-sm text-slate-400">
+                  No scoped monitors yet. Add a contact manually or use the quick-add action from a live chat.
+                </div>
+              ) : (
+                monitoredContacts.map((contact) => (
+                  <div key={contact.id} className="flex flex-col gap-3 rounded-[22px] border border-white/8 bg-slate-950/55 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-white">{contact.contact_name}</p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        {(contact.chat_type || 'direct').toUpperCase()} | {contact.chat_key}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => toggleMonitor(contact)}
+                        className={`rounded-full border px-3 py-1.5 text-xs ${contact.is_active ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-white/8 bg-white/[0.03] text-slate-400'}`}
+                      >
+                        {contact.is_active ? 'Active' : 'Paused'}
+                      </button>
+                      <button
+                        onClick={() => deleteMonitor(contact.id)}
+                        className="rounded-full border border-white/8 bg-white/[0.03] p-2 text-slate-400 transition hover:text-rose-300"
+                        aria-label={`Delete ${contact.contact_name}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
 
           <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
@@ -676,9 +906,20 @@ export default function RealtimeMonitor() {
                           </p>
                         )}
                       </div>
-                      <span className={`rounded-full px-3 py-1.5 text-xs ${chat.unsafe_percentage > 20 ? 'border border-rose-500/20 bg-rose-500/10 text-rose-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
-                        {chat.unsafe_percentage.toFixed(1)}%
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void quickAddMonitor(chat);
+                          }}
+                          className={`rounded-full border px-3 py-1.5 text-xs ${monitoredKeySet.has(chat.external_chat_id || chat.chat_name) ? 'border-cyan-500/25 bg-cyan-500/10 text-cyan-300' : 'border-white/8 bg-white/[0.03] text-slate-300'}`}
+                        >
+                          {monitoredKeySet.has(chat.external_chat_id || chat.chat_name) ? 'Tracked' : 'Track'}
+                        </button>
+                        <span className={`rounded-full px-3 py-1.5 text-xs ${chat.unsafe_percentage > 20 ? 'border border-rose-500/20 bg-rose-500/10 text-rose-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
+                          {chat.unsafe_percentage.toFixed(1)}%
+                        </span>
+                      </div>
                     </div>
                   </button>
                 ))
@@ -784,6 +1025,9 @@ export default function RealtimeMonitor() {
                           <p className="font-medium text-white">{message.sender_name || message.sender}</p>
                           <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-slate-400">
                             {message.chat_name}
+                          </span>
+                          <span className={`rounded-full border px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] ${message.is_from_me ? 'border-cyan-500/20 bg-cyan-500/10 text-cyan-300' : 'border-white/8 bg-white/[0.03] text-slate-400'}`}>
+                            {message.direction ?? (message.is_from_me ? 'outgoing' : 'incoming')}
                           </span>
                         </div>
                         <p className="mt-3 text-sm leading-7 text-slate-300">{message.message}</p>
