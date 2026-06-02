@@ -50,6 +50,7 @@ class Chat(Base):
     __tablename__ = "chats"
     __table_args__ = (
         Index("ix_chats_platform_external_chat_id", "platform", "external_chat_id"),
+        Index("ix_chats_platform_user_id_external_chat_id", "platform", "user_id", "external_chat_id"),
         Index("ix_chats_platform_last_message_at", "platform", "last_message_at"),
     )
 
@@ -198,8 +199,14 @@ class MonitoredContact(Base):
 
 class WhatsAppBridgeState(Base):
     __tablename__ = "whatsapp_bridge_state"
+    __table_args__ = (
+        Index("ix_whatsapp_bridge_state_user_id", "user_id"),
+        Index("ix_whatsapp_bridge_state_session_key", "session_key"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    session_key = Column(String, nullable=True, unique=True)
     status = Column(String, default="disconnected")
     reason = Column(String, nullable=True)
     qr = Column(Text, nullable=True)
@@ -216,10 +223,13 @@ class WhatsAppBridgeState(Base):
 class WhatsAppBridgeEvent(Base):
     __tablename__ = "whatsapp_bridge_events"
     __table_args__ = (
+        Index("ix_whatsapp_bridge_events_user_id_created_at", "user_id", "created_at"),
         Index("ix_whatsapp_bridge_events_event_type_created_at", "event_type", "created_at"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    session_key = Column(String, nullable=True)
     event_type = Column(String, index=True)
     status = Column(String, nullable=True)
     detail = Column(String, nullable=True)
@@ -232,10 +242,13 @@ class WhatsAppBridgeEvent(Base):
 class WhatsAppBridgeStateSnapshot(Base):
     __tablename__ = "whatsapp_bridge_state_snapshots"
     __table_args__ = (
+        Index("ix_whatsapp_bridge_state_snapshots_user_id_created_at", "user_id", "created_at"),
         Index("ix_whatsapp_bridge_state_snapshots_status_created_at", "status", "created_at"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    session_key = Column(String, nullable=True)
     status = Column(String, nullable=True)
     reason = Column(String, nullable=True)
     connected_phone = Column(String, nullable=True)

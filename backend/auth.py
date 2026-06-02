@@ -88,6 +88,29 @@ def get_current_user(
     return user
 
 
+def resolve_user_from_token(token: str | None, db: Session) -> models.User | None:
+    if not token:
+        return None
+    try:
+        payload = decode_access_token(token)
+    except HTTPException:
+        return None
+
+    user = db.query(models.User).filter(models.User.id == payload.get("sub")).first()
+    if user is None or not user.is_active:
+        return None
+    return user
+
+
+def get_optional_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db),
+) -> models.User | None:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        return None
+    return resolve_user_from_token(credentials.credentials, db)
+
+
 def get_current_admin(user: models.User = Depends(get_current_user)) -> models.User:
     if (user.role or "user") != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")

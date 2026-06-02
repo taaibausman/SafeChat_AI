@@ -8,6 +8,15 @@ export const config = {
   authPath: process.env.WHATSAPP_AUTH_PATH || "./auth",
   controlPort: Number(process.env.WHATSAPP_CONTROL_PORT || 3011),
   monitorRefreshMs: Number(process.env.WHATSAPP_MONITOR_REFRESH_MS || 15000),
+  singleAccountMode: parseBoolean(
+    process.env.SAFECHAT_WHATSAPP_SINGLE_ACCOUNT_MODE || process.env.WHATSAPP_SINGLE_ACCOUNT_MODE || "0"
+  ),
+  defaultSessionKey: normalizeSessionKey(
+    process.env.SAFECHAT_WHATSAPP_DEMO_SESSION_KEY || process.env.WHATSAPP_DEFAULT_SESSION_KEY || "safechat-demo"
+  ),
+  forwardAllMessagesInSingleAccountMode: parseBoolean(
+    process.env.SAFECHAT_WHATSAPP_AUTO_FORWARD_ALL || process.env.WHATSAPP_AUTO_FORWARD_ALL || "1"
+  ),
 };
 
 function loadDotEnv() {
@@ -32,4 +41,16 @@ function loadDotEnv() {
       process.env[key] = value;
     }
   }
+}
+
+function parseBoolean(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+}
+
+function normalizeSessionKey(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "");
+  return normalized || "safechat-demo";
 }

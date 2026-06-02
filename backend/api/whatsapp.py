@@ -4,11 +4,13 @@ import os
 from urllib import error, request
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import case, func
+from sqlalchemy import and_, case, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from backend.ai.engine import ai_engine
 from backend.api.realtime import manager
+from backend.auth import get_current_user, get_optional_current_user
 from backend.database.config import get_db
 import backend.models.domain as models
 import backend.schemas.domain as schemas
@@ -19,14 +21,65 @@ BRIDGE_EVENT_RETENTION = max(int(os.getenv("WHATSAPP_BRIDGE_EVENT_RETENTION", "1
 BRIDGE_STATE_SNAPSHOT_RETENTION = max(int(os.getenv("WHATSAPP_BRIDGE_STATE_SNAPSHOT_RETENTION", "1000")), 1)
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _single_account_mode_enabled() -> bool:
+    return _env_flag("SAFECHAT_WHATSAPP_SINGLE_ACCOUNT_MODE", "0")
+
+
+def _auto_forward_all_live_messages() -> bool:
+    default = "1" if _single_account_mode_enabled() else "0"
+    return _env_flag("SAFECHAT_WHATSAPP_AUTO_FORWARD_ALL", default)
+
+
+def _demo_bridge_session_key() -> str:
+    normalized = _normalize_chat_key(os.getenv("SAFECHAT_WHATSAPP_DEMO_SESSION_KEY", "safechat-demo"))
+    return normalized or "safechat-demo"
+
+
+def _demo_owner_email() -> str | None:
+    value = str(
+        os.getenv("SAFECHAT_WHATSAPP_DEMO_OWNER_EMAIL")
+        or os.getenv("SAFECHAT_DEFAULT_ADMIN_EMAIL")
+        or ""
+    ).strip().lower()
+    return value or None
+
+
 def _resolve_timestamp(timestamp: int | None) -> datetime:
     if timestamp:
         return datetime.fromtimestamp(timestamp, tz=timezone.utc)
     return datetime.now(timezone.utc)
 
 
-def _bridge_request(path: str, method: str = "GET") -> tuple[bool, dict | None, str | None]:
+def _bridge_session_key_for_user(user: models.User) -> str:
+    if _single_account_mode_enabled():
+        return _demo_bridge_session_key()
+    return f"user-{user.id}"
+
+
+def _bridge_user_id_from_session_key(session_key: str | None) -> int | None:
+    raw = str(session_key or "").strip().lower()
+    if not raw.startswith("user-"):
+        return None
+    try:
+        return int(raw.split("-", 1)[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _bridge_request(
+    path: str,
+    method: str = "GET",
+    query: dict[str, str] | None = None,
+) -> tuple[bool, dict | None, str | None]:
     url = f"{BRIDGE_CONTROL_URL}{path}"
+    if query:
+        from urllib.parse import urlencode
+
+        url = f"{url}?{urlencode(query)}"
     req = request.Request(url=url, method=method)
     try:
         with request.urlopen(req, timeout=3) as response:
@@ -38,20 +91,46 @@ def _bridge_request(path: str, method: str = "GET") -> tuple[bool, dict | None, 
         return False, None, str(exc)
 
 
-def _get_or_create_bridge_state(db: Session) -> models.WhatsAppBridgeState:
-    state = db.query(models.WhatsAppBridgeState).order_by(models.WhatsAppBridgeState.id.asc()).first()
+def _get_or_create_bridge_state(
+    db: Session,
+    *,
+    user_id: int | None = None,
+    session_key: str | None = None,
+) -> models.WhatsAppBridgeState:
+    query = db.query(models.WhatsAppBridgeState)
+    if session_key:
+        state = query.filter(models.WhatsAppBridgeState.session_key == session_key).first()
+    elif user_id is not None:
+        state = query.filter(models.WhatsAppBridgeState.user_id == user_id).first()
+    else:
+        state = query.order_by(models.WhatsAppBridgeState.id.asc()).first()
     if state:
         return state
 
-    state = models.WhatsAppBridgeState()
+    state = models.WhatsAppBridgeState(user_id=user_id, session_key=session_key)
     db.add(state)
-    db.commit()
-    db.refresh(state)
-    return state
+    try:
+        db.commit()
+        db.refresh(state)
+        return state
+    except IntegrityError:
+        db.rollback()
+        query = db.query(models.WhatsAppBridgeState)
+        if session_key:
+            existing = query.filter(models.WhatsAppBridgeState.session_key == session_key).first()
+        elif user_id is not None:
+            existing = query.filter(models.WhatsAppBridgeState.user_id == user_id).first()
+        else:
+            existing = query.order_by(models.WhatsAppBridgeState.id.asc()).first()
+        if existing:
+            return existing
+        raise
 
 
 def _serialize_status(state: models.WhatsAppBridgeState) -> schemas.WhatsAppStatusResponse:
     return schemas.WhatsAppStatusResponse(
+        bridge_session_key=state.session_key,
+        single_account_mode=_single_account_mode_enabled(),
         status=state.status,
         reason=state.reason,
         qr=state.qr,
@@ -66,6 +145,8 @@ def _serialize_status(state: models.WhatsAppBridgeState) -> schemas.WhatsAppStat
 
 def _record_bridge_state_snapshot(db: Session, state: models.WhatsAppBridgeState) -> models.WhatsAppBridgeStateSnapshot:
     snapshot = models.WhatsAppBridgeStateSnapshot(
+        user_id=state.user_id,
+        session_key=state.session_key,
         status=state.status,
         reason=state.reason,
         connected_phone=state.connected_phone,
@@ -79,6 +160,61 @@ def _record_bridge_state_snapshot(db: Session, state: models.WhatsAppBridgeState
     db.refresh(snapshot)
     _prune_bridge_state_snapshots(db)
     return snapshot
+
+
+def _resolve_demo_owner_user(db: Session) -> models.User | None:
+    email = _demo_owner_email()
+    if email:
+        owner = (
+            db.query(models.User)
+            .filter(
+                func.lower(models.User.email) == email,
+                models.User.is_active.is_(True),
+            )
+            .first()
+        )
+        if owner is not None:
+            return owner
+
+    owner = (
+        db.query(models.User)
+        .filter(models.User.role == "admin", models.User.is_active.is_(True))
+        .order_by(models.User.id.asc())
+        .first()
+    )
+    if owner is not None:
+        return owner
+
+    return (
+        db.query(models.User)
+        .filter(models.User.is_active.is_(True))
+        .order_by(models.User.id.asc())
+        .first()
+    )
+
+
+def _resolve_bridge_owner_user(
+    db: Session,
+    *,
+    session_key: str | None = None,
+    fallback_user_id: int | None = None,
+) -> models.User | None:
+    user_id = _bridge_user_id_from_session_key(session_key)
+    if user_id is not None:
+        return (
+            db.query(models.User)
+            .filter(models.User.id == user_id, models.User.is_active.is_(True))
+            .first()
+        )
+    if _single_account_mode_enabled():
+        return _resolve_demo_owner_user(db)
+    if fallback_user_id is None:
+        return None
+    return (
+        db.query(models.User)
+        .filter(models.User.id == fallback_user_id, models.User.is_active.is_(True))
+        .first()
+    )
 
 
 def _prune_bridge_state_snapshots(db: Session, keep_latest: int | None = None) -> None:
@@ -106,6 +242,8 @@ def _prune_bridge_state_snapshots(db: Session, keep_latest: int | None = None) -
 def _record_bridge_event(
     db: Session,
     event_type: str,
+    user_id: int | None = None,
+    session_key: str | None = None,
     status: str | None = None,
     detail: str | None = None,
     connected_phone: str | None = None,
@@ -113,6 +251,8 @@ def _record_bridge_event(
     payload: dict | None = None,
 ) -> models.WhatsAppBridgeEvent:
     event = models.WhatsAppBridgeEvent(
+        user_id=user_id,
+        session_key=session_key,
         event_type=event_type,
         status=status,
         detail=detail,
@@ -201,13 +341,19 @@ def _derive_chat_name(payload: schemas.IncomingWhatsAppMessage) -> str:
     return payload.group_name or payload.group_id or payload.sender_name or payload.sender or "WhatsApp Live Chat"
 
 
-def _get_or_create_live_chat(db: Session, payload: schemas.IncomingWhatsAppMessage) -> models.Chat:
+def _get_or_create_live_chat(
+    db: Session,
+    payload: schemas.IncomingWhatsAppMessage,
+    *,
+    owner_user_id: int | None = None,
+) -> models.Chat:
     chat = None
     if payload.group_id:
         chat = (
             db.query(models.Chat)
             .filter(
                 models.Chat.platform == "WhatsApp_Live",
+                models.Chat.user_id == owner_user_id,
                 models.Chat.external_chat_id == payload.group_id,
             )
             .first()
@@ -215,6 +361,7 @@ def _get_or_create_live_chat(db: Session, payload: schemas.IncomingWhatsAppMessa
 
     if chat is None:
         chat = models.Chat(
+            user_id=owner_user_id,
             platform="WhatsApp_Live",
             chat_name=_derive_chat_name(payload),
             external_chat_id=payload.group_id,
@@ -227,6 +374,8 @@ def _get_or_create_live_chat(db: Session, payload: schemas.IncomingWhatsAppMessa
         return chat
 
     chat.chat_name = _derive_chat_name(payload)
+    if chat.user_id is None:
+        chat.user_id = owner_user_id
     chat.chat_type = payload.chat_type or chat.chat_type or "group"
     chat.is_live = True
     db.commit()
@@ -297,6 +446,60 @@ def _serialize_live_message(message: models.Message, chat: models.Chat) -> schem
 
 def _normalize_chat_key(value: str | None) -> str:
     return "".join(ch for ch in str(value or "").strip().lower() if ch.isalnum() or ch in {"-", "_"})
+
+
+def _direct_key_matches(message_key: str, monitor_key: str) -> bool:
+    return (
+        message_key == monitor_key
+        or message_key.endswith(monitor_key)
+        or monitor_key.endswith(message_key)
+    )
+
+
+def _message_candidate_keys(payload: schemas.IncomingWhatsAppMessage) -> list[str]:
+    return [
+        value
+        for value in (
+            _normalize_chat_key(payload.group_id),
+            _normalize_chat_key(payload.sender),
+            _normalize_chat_key(payload.group_name),
+            _normalize_chat_key(payload.sender_name),
+        )
+        if value
+    ]
+
+
+def _contact_matches_payload(contact: models.MonitoredContact, payload: schemas.IncomingWhatsAppMessage) -> bool:
+    if not contact.is_active:
+        return False
+    if (contact.chat_type or "direct") != (payload.chat_type or "direct"):
+        return False
+
+    monitor_keys = [
+        value
+        for value in (
+            _normalize_chat_key(contact.chat_key),
+            _normalize_chat_key(contact.phone_number),
+            _normalize_chat_key(contact.contact_name),
+        )
+        if value
+    ]
+    message_keys = _message_candidate_keys(payload)
+    if not monitor_keys or not message_keys:
+        return False
+
+    if (payload.chat_type or "direct") == "direct":
+        return any(_direct_key_matches(message_key, monitor_key) for monitor_key in monitor_keys for message_key in message_keys)
+    return any(message_key == monitor_key for monitor_key in monitor_keys for message_key in message_keys)
+
+
+def _get_live_chat_access_filter(current_user: models.User | None):
+    if current_user is None or (current_user.role or "user") == "admin":
+        return None
+    return (
+        (models.Chat.user_id == current_user.id)
+        | (models.Chat.participants.any(models.User.id == current_user.id))
+    )
 
 
 def _serialize_monitored_contact(contact: models.MonitoredContact) -> schemas.MonitoredContactResponse:
@@ -412,6 +615,36 @@ def _get_latest_message_preview_map(
     return previews
 
 
+def _build_live_chat_window_aggregate_query(
+    db: Session,
+    search: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    current_user: models.User | None = None,
+):
+    query = (
+        db.query(
+            models.Message.chat_id.label("chat_id"),
+            models.Chat.chat_type.label("chat_type"),
+            func.count(models.Message.id).label("message_count"),
+            func.sum(case((models.Message.risk_score > 50, 1), else_=0)).label("flagged_count"),
+            func.max(models.Message.timestamp).label("last_message_at"),
+        )
+        .join(models.Chat, models.Chat.id == models.Message.chat_id)
+        .filter(models.Chat.platform == "WhatsApp_Live")
+    )
+    access_filter = _get_live_chat_access_filter(current_user)
+    if access_filter is not None:
+        query = query.filter(access_filter)
+    if search:
+        query = query.filter(models.Chat.chat_name.ilike(f"%{search}%"))
+    if date_from:
+        query = query.filter(models.Message.timestamp >= date_from)
+    if date_to:
+        query = query.filter(models.Message.timestamp <= date_to)
+    return query.group_by(models.Message.chat_id, models.Chat.chat_type)
+
+
 def _serialize_chat_summary(
     db: Session,
     chat: models.Chat,
@@ -485,17 +718,30 @@ def _serialize_message_base(message: models.Message) -> schemas.MessageBase:
 
 
 @router.get("/status", response_model=schemas.WhatsAppStatusResponse)
-def get_whatsapp_status(db: Session = Depends(get_db)):
-    return _serialize_status(_get_or_create_bridge_state(db))
+def get_whatsapp_status(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    session_key = _bridge_session_key_for_user(current_user)
+    return _serialize_status(_get_or_create_bridge_state(db, user_id=current_user.id, session_key=session_key))
 
 
 @router.get("/bridge-health", response_model=schemas.WhatsAppBridgeHealthResponse)
-def get_bridge_health(db: Session = Depends(get_db)):
-    reachable, payload, detail = _bridge_request("/health")
-    state = _get_or_create_bridge_state(db)
+def get_bridge_health(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    session_key = _bridge_session_key_for_user(current_user)
+    reachable, payload, detail = _bridge_request("/health", query={"session_key": session_key})
+    payload_status = (payload or {}).get("status")
+    payload_detail = detail or (payload or {}).get("detail")
+    state = _get_or_create_bridge_state(db, user_id=current_user.id, session_key=session_key)
+    if payload_status:
+        state.status = payload_status
+    state.reason = payload_detail
     state.bridge_reachable = reachable
-    state.bridge_status = (payload or {}).get("status")
-    state.bridge_detail = detail or (payload or {}).get("detail")
+    state.bridge_status = payload_status
+    state.bridge_detail = payload_detail
     state.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(state)
@@ -503,8 +749,10 @@ def get_bridge_health(db: Session = Depends(get_db)):
     _record_bridge_event(
         db,
         event_type="health_check",
-        status=(payload or {}).get("status"),
-        detail=detail or (payload or {}).get("detail"),
+        user_id=current_user.id,
+        session_key=session_key,
+        status=payload_status,
+        detail=payload_detail,
         connected_phone=state.connected_phone,
         bridge_reachable=reachable,
         payload=payload,
@@ -514,17 +762,25 @@ def get_bridge_health(db: Session = Depends(get_db)):
         return schemas.WhatsAppBridgeHealthResponse(reachable=False, detail=detail)
     return schemas.WhatsAppBridgeHealthResponse(
         reachable=True,
-        status=(payload or {}).get("status"),
+        status=payload_status,
         detail=(payload or {}).get("detail"),
     )
 
 
 @router.post("/bridge-restart", response_model=schemas.WhatsAppBridgeHealthResponse)
-def restart_bridge(db: Session = Depends(get_db)):
-    reachable, payload, detail = _bridge_request("/restart", method="POST")
-    state = _get_or_create_bridge_state(db)
+def restart_bridge(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    session_key = _bridge_session_key_for_user(current_user)
+    reachable, payload, detail = _bridge_request("/restart", method="POST", query={"session_key": session_key})
+    payload_status = (payload or {}).get("status")
+    state = _get_or_create_bridge_state(db, user_id=current_user.id, session_key=session_key)
+    if payload_status:
+        state.status = payload_status
+    state.reason = detail or "Restart signal sent to WhatsApp bridge."
     state.bridge_reachable = reachable
-    state.bridge_status = (payload or {}).get("status")
+    state.bridge_status = payload_status
     state.bridge_detail = detail or "Restart signal sent to WhatsApp bridge."
     state.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -533,6 +789,8 @@ def restart_bridge(db: Session = Depends(get_db)):
     _record_bridge_event(
         db,
         event_type="restart",
+        user_id=current_user.id,
+        session_key=session_key,
         status=(payload or {}).get("status"),
         detail=detail or "Restart signal sent to WhatsApp bridge.",
         connected_phone=state.connected_phone,
@@ -551,7 +809,13 @@ def restart_bridge(db: Session = Depends(get_db)):
 
 @router.post("/status", response_model=schemas.WhatsAppStatusResponse)
 async def update_whatsapp_status(payload: schemas.WhatsAppStatusUpdate, db: Session = Depends(get_db)):
-    state = _get_or_create_bridge_state(db)
+    session_key = payload.bridge_session_key or (_demo_bridge_session_key() if _single_account_mode_enabled() else None)
+    owner = _resolve_bridge_owner_user(db, session_key=session_key)
+    user_id = owner.id if owner is not None else _bridge_user_id_from_session_key(session_key)
+    if session_key and user_id is not None:
+        state = _get_or_create_bridge_state(db, user_id=user_id, session_key=session_key)
+    else:
+        state = _get_or_create_bridge_state(db)
     state.status = payload.status
     state.reason = payload.reason
     state.qr = payload.qr if payload.status != "connected" else None
@@ -568,6 +832,8 @@ async def update_whatsapp_status(payload: schemas.WhatsAppStatusUpdate, db: Sess
     _record_bridge_event(
         db,
         event_type="status_update",
+        user_id=user_id,
+        session_key=session_key,
         status=state.status,
         detail=state.reason,
         connected_phone=state.connected_phone,
@@ -576,13 +842,20 @@ async def update_whatsapp_status(payload: schemas.WhatsAppStatusUpdate, db: Sess
     )
 
     response = _serialize_status(state)
-    await manager.broadcast({"type": "status", "payload": response.model_dump(mode="json")})
+    await manager.broadcast(
+        {"type": "status", "payload": response.model_dump(mode="json")},
+        audience_user_ids=[user_id] if user_id is not None else None,
+    )
     return response
 
 
 @router.get("/qr", response_model=schemas.WhatsAppStatusResponse)
-def get_whatsapp_qr(db: Session = Depends(get_db)):
-    return _serialize_status(_get_or_create_bridge_state(db))
+def get_whatsapp_qr(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    session_key = _bridge_session_key_for_user(current_user)
+    return _serialize_status(_get_or_create_bridge_state(db, user_id=current_user.id, session_key=session_key))
 
 
 @router.get("/bridge-events", response_model=schemas.WhatsAppBridgeEventListResponse)
@@ -735,26 +1008,32 @@ def get_bridge_state_history_summary(
 @router.get("/bridge-ops-summary", response_model=schemas.WhatsAppBridgeOpsSummaryResponse)
 def get_bridge_ops_summary(
     recent_window_hours: int = Query(default=24, ge=1, le=168),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
-    state = _get_or_create_bridge_state(db)
+    is_admin = current_user is not None and (current_user.role or "user") == "admin"
+    session_key = _bridge_session_key_for_user(current_user) if current_user is not None else None
+    if current_user is not None and not is_admin:
+        state = _get_or_create_bridge_state(db, user_id=current_user.id, session_key=session_key)
+    else:
+        state = _get_or_create_bridge_state(db)
     current_state = _serialize_status(state)
-    latest_event = _latest_bridge_event(db)
-    latest_snapshot = _latest_bridge_state_snapshot(db)
+    event_query = db.query(models.WhatsAppBridgeEvent)
+    snapshot_query = db.query(models.WhatsAppBridgeStateSnapshot)
+    if current_user is not None and not is_admin:
+        event_query = event_query.filter(models.WhatsAppBridgeEvent.user_id == current_user.id)
+        snapshot_query = snapshot_query.filter(models.WhatsAppBridgeStateSnapshot.user_id == current_user.id)
+    latest_event = event_query.order_by(models.WhatsAppBridgeEvent.created_at.desc(), models.WhatsAppBridgeEvent.id.desc()).first()
+    latest_snapshot = snapshot_query.order_by(models.WhatsAppBridgeStateSnapshot.created_at.desc(), models.WhatsAppBridgeStateSnapshot.id.desc()).first()
     window_start = datetime.now(timezone.utc) - timedelta(hours=recent_window_hours)
 
-    recent_event_count = (
-        db.query(func.count(models.WhatsAppBridgeEvent.id))
-        .filter(models.WhatsAppBridgeEvent.created_at >= window_start)
-        .scalar()
-        or 0
-    )
-    recent_snapshot_count = (
-        db.query(func.count(models.WhatsAppBridgeStateSnapshot.id))
-        .filter(models.WhatsAppBridgeStateSnapshot.created_at >= window_start)
-        .scalar()
-        or 0
-    )
+    recent_event_count_query = db.query(func.count(models.WhatsAppBridgeEvent.id)).filter(models.WhatsAppBridgeEvent.created_at >= window_start)
+    recent_snapshot_count_query = db.query(func.count(models.WhatsAppBridgeStateSnapshot.id)).filter(models.WhatsAppBridgeStateSnapshot.created_at >= window_start)
+    if current_user is not None and not is_admin:
+        recent_event_count_query = recent_event_count_query.filter(models.WhatsAppBridgeEvent.user_id == current_user.id)
+        recent_snapshot_count_query = recent_snapshot_count_query.filter(models.WhatsAppBridgeStateSnapshot.user_id == current_user.id)
+    recent_event_count = recent_event_count_query.scalar() or 0
+    recent_snapshot_count = recent_snapshot_count_query.scalar() or 0
     attention_required = (
         state.status not in {"connected"}
         or not bool(state.bridge_reachable)
@@ -777,9 +1056,14 @@ def get_bridge_ops_summary(
 def list_monitored_contacts(
     active_only: bool = Query(default=False),
     chat_type: str | None = Query(default=None),
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    query = db.query(models.MonitoredContact).order_by(models.MonitoredContact.is_active.desc(), models.MonitoredContact.contact_name.asc())
+    query = (
+        db.query(models.MonitoredContact)
+        .filter(models.MonitoredContact.user_id == current_user.id)
+        .order_by(models.MonitoredContact.is_active.desc(), models.MonitoredContact.contact_name.asc())
+    )
     if active_only:
         query = query.filter(models.MonitoredContact.is_active.is_(True))
     if chat_type:
@@ -791,15 +1075,46 @@ def list_monitored_contacts(
     )
 
 
+@router.get("/bridge/monitored-contacts", response_model=schemas.MonitoredContactListResponse)
+def list_bridge_monitored_contacts(
+    session_key: str | None = Query(default=None),
+    active_only: bool = Query(default=True),
+    chat_type: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    owner = _resolve_bridge_owner_user(db, session_key=session_key)
+    if owner is None:
+        raise HTTPException(status_code=400, detail="Valid bridge session key is required")
+
+    query = db.query(models.MonitoredContact).filter(models.MonitoredContact.user_id == owner.id)
+    if active_only:
+        query = query.filter(models.MonitoredContact.is_active.is_(True))
+    if chat_type:
+        query = query.filter(models.MonitoredContact.chat_type == chat_type)
+    contacts = query.order_by(models.MonitoredContact.contact_name.asc()).all()
+    return schemas.MonitoredContactListResponse(
+        total=len(contacts),
+        contacts=[_serialize_monitored_contact(contact) for contact in contacts],
+    )
+
+
 @router.post("/monitored-contacts", response_model=schemas.MonitoredContactResponse)
-def create_monitored_contact(payload: schemas.MonitoredContactCreateRequest, db: Session = Depends(get_db)):
+def create_monitored_contact(
+    payload: schemas.MonitoredContactCreateRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     normalized_key = _normalize_chat_key(payload.chat_key)
     if not normalized_key:
         raise HTTPException(status_code=400, detail="Chat key is required")
 
     existing = (
         db.query(models.MonitoredContact)
-        .filter(models.MonitoredContact.chat_key == normalized_key, models.MonitoredContact.chat_type == payload.chat_type)
+        .filter(
+            models.MonitoredContact.user_id == current_user.id,
+            models.MonitoredContact.chat_key == normalized_key,
+            models.MonitoredContact.chat_type == payload.chat_type,
+        )
         .first()
     )
     if existing:
@@ -811,6 +1126,7 @@ def create_monitored_contact(payload: schemas.MonitoredContactCreateRequest, db:
         return _serialize_monitored_contact(existing)
 
     contact = models.MonitoredContact(
+        user_id=current_user.id,
         contact_name=payload.contact_name.strip(),
         phone_number=normalized_key,
         chat_key=normalized_key,
@@ -827,9 +1143,14 @@ def create_monitored_contact(payload: schemas.MonitoredContactCreateRequest, db:
 def update_monitored_contact(
     contact_id: int,
     payload: schemas.MonitoredContactUpdateRequest,
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    contact = db.query(models.MonitoredContact).filter(models.MonitoredContact.id == contact_id).first()
+    contact = (
+        db.query(models.MonitoredContact)
+        .filter(models.MonitoredContact.id == contact_id, models.MonitoredContact.user_id == current_user.id)
+        .first()
+    )
     if contact is None:
         raise HTTPException(status_code=404, detail="Monitored contact not found")
 
@@ -843,6 +1164,7 @@ def update_monitored_contact(
             db.query(models.MonitoredContact)
             .filter(
                 models.MonitoredContact.id != contact.id,
+                models.MonitoredContact.user_id == current_user.id,
                 models.MonitoredContact.chat_key == normalized_key,
                 models.MonitoredContact.chat_type == (payload.chat_type or contact.chat_type),
             )
@@ -863,8 +1185,16 @@ def update_monitored_contact(
 
 
 @router.delete("/monitored-contacts/{contact_id}")
-def delete_monitored_contact(contact_id: int, db: Session = Depends(get_db)):
-    contact = db.query(models.MonitoredContact).filter(models.MonitoredContact.id == contact_id).first()
+def delete_monitored_contact(
+    contact_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    contact = (
+        db.query(models.MonitoredContact)
+        .filter(models.MonitoredContact.id == contact_id, models.MonitoredContact.user_id == current_user.id)
+        .first()
+    )
     if contact is None:
         raise HTTPException(status_code=404, detail="Monitored contact not found")
     db.delete(contact)
@@ -874,7 +1204,64 @@ def delete_monitored_contact(contact_id: int, db: Session = Depends(get_db)):
 
 @router.post("/messages/incoming")
 async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db: Session = Depends(get_db)):
-    chat = _get_or_create_live_chat(db, payload)
+    bridge_session_key = payload.bridge_session_key
+    bridge_user_id = _bridge_user_id_from_session_key(bridge_session_key)
+    if bridge_user_id is not None:
+        bridge_user = (
+            db.query(models.User)
+            .filter(models.User.id == bridge_user_id, models.User.is_active.is_(True))
+            .first()
+        )
+        if bridge_user is None:
+            raise HTTPException(status_code=404, detail="Bridge owner not found")
+
+        matched_contacts = [
+            contact
+            for contact in db.query(models.MonitoredContact).filter(models.MonitoredContact.user_id == bridge_user_id).all()
+            if _contact_matches_payload(contact, payload)
+        ]
+        if not matched_contacts:
+            if not (_single_account_mode_enabled() and _auto_forward_all_live_messages()):
+                return {"ignored": True, "reason": "no_matching_user_scope"}
+            matched_user_ids = [bridge_user_id]
+        else:
+            matched_user_ids = [bridge_user_id]
+
+        chat = _get_or_create_live_chat(db, payload, owner_user_id=bridge_user_id)
+        existing_participant_ids = {participant.id for participant in chat.participants}
+        if bridge_user.id not in existing_participant_ids:
+            chat.participants.append(bridge_user)
+        if chat.user_id is None:
+            chat.user_id = bridge_user.id
+    else:
+        matched_contacts = [contact for contact in db.query(models.MonitoredContact).all() if _contact_matches_payload(contact, payload)]
+        matched_user_ids = sorted({contact.user_id for contact in matched_contacts if contact.user_id})
+        if not matched_user_ids:
+            if not (_single_account_mode_enabled() and _auto_forward_all_live_messages()):
+                return {"ignored": True, "reason": "no_matching_user_scope"}
+            owner = _resolve_demo_owner_user(db)
+            if owner is None:
+                raise HTTPException(status_code=503, detail="No active demo owner is available for live WhatsApp ingestion")
+            matched_users = [owner]
+            matched_user_ids = [owner.id]
+            owner_user_id = owner.id
+        else:
+            matched_users = (
+                db.query(models.User)
+                .filter(models.User.id.in_(matched_user_ids), models.User.is_active.is_(True))
+                .all()
+            )
+            owner_user_id = matched_user_ids[0] if len(matched_user_ids) == 1 else None
+
+        chat = _get_or_create_live_chat(db, payload, owner_user_id=owner_user_id)
+        existing_participant_ids = {participant.id for participant in chat.participants}
+        for user in matched_users:
+            if user.id not in existing_participant_ids:
+                chat.participants.append(user)
+        if chat.user_id is None and len(matched_users) == 1:
+            chat.user_id = matched_users[0].id
+    db.commit()
+    db.refresh(chat)
 
     existing = None
     if payload.message_id:
@@ -952,7 +1339,6 @@ async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db:
     live_message = _serialize_live_message(message, chat)
     chat_summary = _serialize_chat_summary(db, chat)
 
-    await manager.broadcast({"type": "message", "payload": live_message.model_dump(mode="json")})
     await manager.broadcast(
         {
             "type": "chat_updated",
@@ -966,8 +1352,10 @@ async def receive_incoming_message(payload: schemas.IncomingWhatsAppMessage, db:
                     "summary": result.summary,
                 },
             },
-        }
+        },
+        audience_user_ids=matched_user_ids,
     )
+    await manager.broadcast({"type": "message", "payload": live_message.model_dump(mode="json")}, audience_user_ids=matched_user_ids)
 
     return {
         "chat_id": chat.id,
@@ -989,6 +1377,7 @@ def get_live_feed(
     date_to: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
     query = (
@@ -996,6 +1385,9 @@ def get_live_feed(
         .join(models.Chat, models.Chat.id == models.Message.chat_id)
         .filter(models.Chat.platform == "WhatsApp_Live")
     )
+    access_filter = _get_live_chat_access_filter(current_user)
+    if access_filter is not None:
+        query = query.filter(access_filter)
     if chat_id is not None:
         query = query.filter(models.Chat.id == chat_id)
     if flagged_only:
@@ -1028,8 +1420,10 @@ def get_live_chats(
     date_to: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
+    access_filter = _get_live_chat_access_filter(current_user)
     if date_from or date_to:
         aggregate_query = (
             db.query(
@@ -1041,6 +1435,8 @@ def get_live_chats(
             .join(models.Chat, models.Chat.id == models.Message.chat_id)
             .filter(models.Chat.platform == "WhatsApp_Live")
         )
+        if access_filter is not None:
+            aggregate_query = aggregate_query.filter(access_filter)
         if search:
             aggregate_query = aggregate_query.filter(models.Chat.chat_name.ilike(f"%{search}%"))
         if date_from:
@@ -1104,6 +1500,8 @@ def get_live_chats(
         return schemas.WhatsAppChatListResponse(total=total, limit=limit, offset=offset, chats=chats)
 
     query = db.query(models.Chat).filter(models.Chat.platform == "WhatsApp_Live")
+    if access_filter is not None:
+        query = query.filter(access_filter)
     if search:
         query = query.filter(models.Chat.chat_name.ilike(f"%{search}%"))
     if flagged_only:
@@ -1135,115 +1533,125 @@ def get_live_chat_summary(
     flagged_only: bool = Query(default=False),
     date_from: datetime | None = Query(default=None),
     date_to: datetime | None = Query(default=None),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
+    access_filter = _get_live_chat_access_filter(current_user)
+    if date_from or date_to:
+        aggregate_subquery = _build_live_chat_window_aggregate_query(
+            db,
+            search=search,
+            date_from=date_from,
+            date_to=date_to,
+            current_user=current_user,
+        ).subquery()
+        aggregate_query = db.query(aggregate_subquery)
+        if flagged_only:
+            aggregate_query = aggregate_query.filter(aggregate_subquery.c.flagged_count > 0)
+
+        summary_row = aggregate_query.with_entities(
+            func.count(aggregate_subquery.c.chat_id),
+            func.coalesce(func.sum(aggregate_subquery.c.message_count), 0),
+            func.coalesce(
+                func.sum(case((aggregate_subquery.c.flagged_count > 0, 1), else_=0)),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                aggregate_subquery.c.flagged_count > 0,
+                                aggregate_subquery.c.flagged_count * 2 >= aggregate_subquery.c.message_count,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.max(aggregate_subquery.c.last_message_at),
+        ).one()
+        by_chat_type_rows = aggregate_query.with_entities(
+            aggregate_subquery.c.chat_type,
+            func.count(aggregate_subquery.c.chat_id),
+        ).group_by(aggregate_subquery.c.chat_type).all()
+        total_chats = int(summary_row[0] or 0)
+        flagged_chats = int(summary_row[2] or 0)
+        high_risk_chats = int(summary_row[3] or 0)
+        by_chat_type = {
+            (chat_type or "unknown"): int(count or 0)
+            for chat_type, count in by_chat_type_rows
+        }
+        return schemas.WhatsAppChatSummaryAggregateResponse(
+            total_chats=total_chats,
+            total_messages=int(summary_row[1] or 0),
+            flagged_chats=flagged_chats,
+            by_chat_type=by_chat_type,
+            by_risk_state={
+                "safe": max(total_chats - flagged_chats, 0),
+                "flagged": flagged_chats,
+                "high_risk": high_risk_chats,
+            },
+            latest_message_at=summary_row[4],
+        )
+
     query = db.query(models.Chat).filter(models.Chat.platform == "WhatsApp_Live")
+    if access_filter is not None:
+        query = query.filter(access_filter)
     if search:
         query = query.filter(models.Chat.chat_name.ilike(f"%{search}%"))
-
-    chats = query.all()
-    if date_from or date_to:
-        message_query = (
-            db.query(models.Message, models.Chat)
-            .join(models.Chat, models.Chat.id == models.Message.chat_id)
-            .filter(models.Chat.platform == "WhatsApp_Live")
-        )
-        if search:
-            message_query = message_query.filter(models.Chat.chat_name.ilike(f"%{search}%"))
-        if date_from:
-            message_query = message_query.filter(models.Message.timestamp >= date_from)
-        if date_to:
-            message_query = message_query.filter(models.Message.timestamp <= date_to)
-
-        rows = message_query.all()
-        by_chat_id: dict[int, dict[str, object]] = {}
-        for message, chat in rows:
-            chat_bucket = by_chat_id.setdefault(
-                chat.id,
-                {
-                    "chat": chat,
-                    "message_count": 0,
-                    "flagged_count": 0,
-                    "latest_message_at": None,
-                },
-            )
-            chat_bucket["message_count"] = int(chat_bucket["message_count"]) + 1
-            if (message.risk_score or 0) > 50:
-                chat_bucket["flagged_count"] = int(chat_bucket["flagged_count"]) + 1
-            if chat_bucket["latest_message_at"] is None or (
-                message.timestamp and message.timestamp > chat_bucket["latest_message_at"]
-            ):
-                chat_bucket["latest_message_at"] = message.timestamp
-
-        if flagged_only:
-            by_chat_id = {
-                chat_id: bucket for chat_id, bucket in by_chat_id.items() if int(bucket["flagged_count"]) > 0
-            }
-
-        by_chat_type: dict[str, int] = {}
-        by_risk_state = {"safe": 0, "flagged": 0, "high_risk": 0}
-        latest_message_at = None
-        total_messages = 0
-
-        for bucket in by_chat_id.values():
-            chat = bucket["chat"]
-            message_count = int(bucket["message_count"])
-            flagged_messages = int(bucket["flagged_count"])
-            bucket_latest = bucket["latest_message_at"]
-            normalized_chat_type = chat.chat_type or "unknown"
-            by_chat_type[normalized_chat_type] = by_chat_type.get(normalized_chat_type, 0) + 1
-            total_messages += message_count
-
-            if flagged_messages <= 0:
-                by_risk_state["safe"] += 1
-            else:
-                by_risk_state["flagged"] += 1
-                if message_count and flagged_messages / message_count >= 0.5:
-                    by_risk_state["high_risk"] += 1
-
-            if latest_message_at is None or (bucket_latest and bucket_latest > latest_message_at):
-                latest_message_at = bucket_latest
-
-        return schemas.WhatsAppChatSummaryAggregateResponse(
-            total_chats=len(by_chat_id),
-            total_messages=total_messages,
-            flagged_chats=by_risk_state["flagged"],
-            by_chat_type=by_chat_type,
-            by_risk_state=by_risk_state,
-            latest_message_at=latest_message_at,
-        )
-
     if flagged_only:
-        chats = [chat for chat in chats if (chat.flagged_message_count or 0) > 0]
+        query = query.filter(models.Chat.flagged_message_count > 0)
 
-    by_chat_type: dict[str, int] = {}
-    by_risk_state = {"safe": 0, "flagged": 0, "high_risk": 0}
-    latest_message_at = None
-    total_messages = 0
-
-    for chat in chats:
-        normalized_chat_type = chat.chat_type or "unknown"
-        by_chat_type[normalized_chat_type] = by_chat_type.get(normalized_chat_type, 0) + 1
-        total_messages += chat.message_count or 0
-
-        flagged_messages = chat.flagged_message_count or 0
-        if flagged_messages <= 0:
-            by_risk_state["safe"] += 1
-        else:
-            by_risk_state["flagged"] += 1
-            if (chat.message_count or 0) and flagged_messages / (chat.message_count or 1) >= 0.5:
-                by_risk_state["high_risk"] += 1
-
-        if latest_message_at is None or (chat.last_message_at and chat.last_message_at > latest_message_at):
-            latest_message_at = chat.last_message_at
+    summary_row = query.with_entities(
+        func.count(models.Chat.id),
+        func.coalesce(func.sum(models.Chat.message_count), 0),
+        func.coalesce(
+            func.sum(case((models.Chat.flagged_message_count > 0, 1), else_=0)),
+            0,
+        ),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        and_(
+                            models.Chat.flagged_message_count > 0,
+                            models.Chat.flagged_message_count * 2 >= models.Chat.message_count,
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ),
+        func.max(models.Chat.last_message_at),
+    ).one()
+    by_chat_type_rows = query.with_entities(
+        models.Chat.chat_type,
+        func.count(models.Chat.id),
+    ).group_by(models.Chat.chat_type).all()
+    total_chats = int(summary_row[0] or 0)
+    flagged_chats = int(summary_row[2] or 0)
+    high_risk_chats = int(summary_row[3] or 0)
+    by_chat_type = {
+        (chat_type or "unknown"): int(count or 0)
+        for chat_type, count in by_chat_type_rows
+    }
 
     return schemas.WhatsAppChatSummaryAggregateResponse(
-        total_chats=len(chats),
-        total_messages=total_messages,
-        flagged_chats=by_risk_state["flagged"],
+        total_chats=total_chats,
+        total_messages=int(summary_row[1] or 0),
+        flagged_chats=flagged_chats,
         by_chat_type=by_chat_type,
-        by_risk_state=by_risk_state,
-        latest_message_at=latest_message_at,
+        by_risk_state={
+            "safe": max(total_chats - flagged_chats, 0),
+            "flagged": flagged_chats,
+            "high_risk": high_risk_chats,
+        },
+        latest_message_at=summary_row[4],
     )
 
 
@@ -1255,6 +1663,7 @@ def get_live_chat_detail(
     date_to: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
     chat = (
@@ -1263,6 +1672,15 @@ def get_live_chat_detail(
         .filter(models.Chat.id == chat_id, models.Chat.platform == "WhatsApp_Live")
         .first()
     )
+    access_filter = _get_live_chat_access_filter(current_user)
+    if chat and access_filter is not None:
+        allowed = (
+            db.query(models.Chat.id)
+            .filter(models.Chat.id == chat.id, access_filter)
+            .first()
+        )
+        if not allowed:
+            chat = None
     if not chat:
         from fastapi import HTTPException
 
@@ -1325,6 +1743,7 @@ def get_live_alerts(
     date_to: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
     query = (
@@ -1333,6 +1752,9 @@ def get_live_alerts(
         .join(models.Chat, models.Chat.id == models.Message.chat_id)
         .filter(models.Chat.platform == "WhatsApp_Live")
     )
+    access_filter = _get_live_chat_access_filter(current_user)
+    if access_filter is not None:
+        query = query.filter(access_filter)
     if chat_id is not None:
         query = query.filter(models.Chat.id == chat_id)
     if severity:
@@ -1357,6 +1779,7 @@ def get_live_alert_summary(
     status: str | None = Query(default=None),
     date_from: datetime | None = Query(default=None),
     date_to: datetime | None = Query(default=None),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
     query = (
@@ -1365,6 +1788,9 @@ def get_live_alert_summary(
         .join(models.Chat, models.Chat.id == models.Message.chat_id)
         .filter(models.Chat.platform == "WhatsApp_Live")
     )
+    access_filter = _get_live_chat_access_filter(current_user)
+    if access_filter is not None:
+        query = query.filter(access_filter)
     if chat_id is not None:
         query = query.filter(models.Chat.id == chat_id)
     if severity:
@@ -1398,7 +1824,12 @@ def get_live_alert_summary(
 
 
 @router.patch("/alerts/{alert_id}", response_model=schemas.LiveAlertResponse)
-def update_live_alert(alert_id: int, payload: schemas.AlertUpdateRequest, db: Session = Depends(get_db)):
+def update_live_alert(
+    alert_id: int,
+    payload: schemas.AlertUpdateRequest,
+    current_user: models.User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+):
     from fastapi import HTTPException
 
     row = (
@@ -1408,6 +1839,15 @@ def update_live_alert(alert_id: int, payload: schemas.AlertUpdateRequest, db: Se
         .filter(models.Alert.id == alert_id, models.Chat.platform == "WhatsApp_Live")
         .first()
     )
+    access_filter = _get_live_chat_access_filter(current_user)
+    if row and access_filter is not None:
+        allowed = (
+            db.query(models.Chat.id)
+            .filter(models.Chat.id == row[2].id, access_filter)
+            .first()
+        )
+        if not allowed:
+            row = None
     if not row:
         raise HTTPException(status_code=404, detail="Live alert not found")
 
@@ -1433,14 +1873,25 @@ def update_live_alert(alert_id: int, payload: schemas.AlertUpdateRequest, db: Se
 def get_live_summary(
     date_from: datetime | None = Query(default=None),
     date_to: datetime | None = Query(default=None),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
-    state = _get_or_create_bridge_state(db)
+    if current_user is not None and (current_user.role or "user") != "admin":
+        state = _get_or_create_bridge_state(
+            db,
+            user_id=current_user.id,
+            session_key=_bridge_session_key_for_user(current_user),
+        )
+    else:
+        state = _get_or_create_bridge_state(db)
     message_query = (
         db.query(models.Message)
         .join(models.Chat, models.Chat.id == models.Message.chat_id)
         .filter(models.Chat.platform == "WhatsApp_Live")
     )
+    access_filter = _get_live_chat_access_filter(current_user)
+    if access_filter is not None:
+        message_query = message_query.filter(access_filter)
     if date_from:
         message_query = message_query.filter(models.Message.timestamp >= date_from)
     if date_to:
@@ -1452,6 +1903,8 @@ def get_live_summary(
         .join(models.Chat, models.Chat.id == models.Message.chat_id)
         .filter(models.Chat.platform == "WhatsApp_Live")
     )
+    if access_filter is not None:
+        alert_query = alert_query.filter(access_filter)
     if date_from:
         alert_query = alert_query.filter(models.Alert.created_at >= date_from)
     if date_to:
@@ -1466,6 +1919,7 @@ def get_live_summary(
         total_live_chats = (
             db.query(func.count(models.Chat.id))
             .filter(models.Chat.platform == "WhatsApp_Live")
+            .filter(access_filter if access_filter is not None else True)
             .scalar()
             or 0
         )
@@ -1518,15 +1972,18 @@ def get_live_summary(
 @router.get("/ops-summary", response_model=schemas.WhatsAppLiveOpsSummaryResponse)
 def get_live_ops_summary(
     recent_window_hours: int = Query(default=24, ge=1, le=168),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
     window_start = datetime.now(timezone.utc) - timedelta(hours=recent_window_hours)
-    live_summary = get_live_summary(date_from=window_start, date_to=None, db=db)
+    live_summary = get_live_summary(date_from=window_start, date_to=None, current_user=current_user, db=db)
+    access_filter = _get_live_chat_access_filter(current_user)
 
     recent_feed_count = (
         db.query(func.count(models.Message.id))
         .join(models.Chat, models.Chat.id == models.Message.chat_id)
         .filter(models.Chat.platform == "WhatsApp_Live", models.Message.timestamp >= window_start)
+        .filter(access_filter if access_filter is not None else True)
         .scalar()
         or 0
     )
@@ -1535,6 +1992,7 @@ def get_live_ops_summary(
         .join(models.Message, models.Message.id == models.Alert.message_id)
         .join(models.Chat, models.Chat.id == models.Message.chat_id)
         .filter(models.Chat.platform == "WhatsApp_Live", models.Alert.created_at >= window_start)
+        .filter(access_filter if access_filter is not None else True)
         .scalar()
         or 0
     )
@@ -1546,40 +2004,46 @@ def get_live_ops_summary(
             models.Message.timestamp >= window_start,
             models.Message.risk_score > 50,
         )
+        .filter(access_filter if access_filter is not None else True)
         .scalar()
         or 0
     )
 
-    recent_chats = (
-        db.query(models.Chat)
-        .join(models.Message, models.Message.chat_id == models.Chat.id)
+    recent_chat_stats = (
+        db.query(
+            models.Message.chat_id.label("chat_id"),
+            func.count(models.Message.id).label("message_count"),
+            func.sum(case((models.Message.risk_score > 50, 1), else_=0)).label("flagged_count"),
+        )
+        .join(models.Chat, models.Chat.id == models.Message.chat_id)
         .filter(models.Chat.platform == "WhatsApp_Live", models.Message.timestamp >= window_start)
-        .distinct()
-        .all()
+        .filter(access_filter if access_filter is not None else True)
+        .group_by(models.Message.chat_id)
+        .subquery()
     )
-    flagged_chat_count = 0
-    high_risk_chat_count = 0
-    for chat in recent_chats:
-        message_count = (
-            db.query(func.count(models.Message.id))
-            .filter(models.Message.chat_id == chat.id, models.Message.timestamp >= window_start)
-            .scalar()
-            or 0
-        )
-        flagged_count = (
-            db.query(func.count(models.Message.id))
-            .filter(
-                models.Message.chat_id == chat.id,
-                models.Message.timestamp >= window_start,
-                models.Message.risk_score > 50,
-            )
-            .scalar()
-            or 0
-        )
-        if flagged_count > 0:
-            flagged_chat_count += 1
-            if message_count and flagged_count / message_count >= 0.5:
-                high_risk_chat_count += 1
+    chat_risk_summary = db.query(
+        func.coalesce(
+            func.sum(case((recent_chat_stats.c.flagged_count > 0, 1), else_=0)),
+            0,
+        ),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        and_(
+                            recent_chat_stats.c.flagged_count > 0,
+                            recent_chat_stats.c.flagged_count * 2 >= recent_chat_stats.c.message_count,
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ),
+    ).one()
+    flagged_chat_count = int(chat_risk_summary[0] or 0)
+    high_risk_chat_count = int(chat_risk_summary[1] or 0)
 
     attention_required = (
         live_summary.bridge_status != "connected"
@@ -1603,10 +2067,15 @@ def get_live_ops_summary(
 @router.get("/health-summary", response_model=schemas.WhatsAppBackendHealthResponse)
 def get_backend_health_summary(
     recent_window_hours: int = Query(default=24, ge=1, le=168),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
-    bridge_ops = get_bridge_ops_summary(recent_window_hours=recent_window_hours, db=db)
-    live_ops = get_live_ops_summary(recent_window_hours=recent_window_hours, db=db)
+    bridge_ops = get_bridge_ops_summary(
+        recent_window_hours=recent_window_hours,
+        current_user=current_user,
+        db=db,
+    )
+    live_ops = get_live_ops_summary(recent_window_hours=recent_window_hours, current_user=current_user, db=db)
     attention_required = bridge_ops.attention_required or live_ops.attention_required
     status = "attention" if attention_required else "healthy"
     return schemas.WhatsAppBackendHealthResponse(

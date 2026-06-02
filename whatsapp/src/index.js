@@ -1,4 +1,5 @@
 import http from "node:http";
+import path from "node:path";
 
 import makeWASocket, {
   DisconnectReason,
@@ -11,22 +12,54 @@ import { Server as SocketIOServer } from "socket.io";
 import { config } from "./config.js";
 import { normalizeIncomingMessage } from "./message-normalizer.js";
 
-let currentSocket = null;
-let isRestarting = false;
-let reconnectDelayMs = 3000;
+const sessions = new Map();
 let socketServer = null;
-let bridgeState = {
-  status: "starting",
-  detail: "Bridge booting",
-  monitored_contacts: 0,
-};
-let monitoredContactsCache = {
-  contacts: [],
-  fetchedAt: 0,
-};
 
 function emitBridgeEvent(type, payload) {
   socketServer?.emit(type, payload);
+}
+
+function resolveSessionKey(sessionKey) {
+  const normalized = String(sessionKey || "").trim().toLowerCase();
+  if (config.singleAccountMode) {
+    return config.defaultSessionKey;
+  }
+  return normalized || null;
+}
+
+function getSession(sessionKey) {
+  const normalized = resolveSessionKey(sessionKey);
+  if (!normalized) {
+    return null;
+  }
+  if (!sessions.has(normalized)) {
+    sessions.set(normalized, {
+      sessionKey: normalized,
+      socket: null,
+      isRestarting: false,
+      reconnectDelayMs: 3000,
+      bridgeState: {
+        session_key: normalized,
+        status: "idle",
+        detail: "Session not started",
+        monitored_contacts: 0,
+      },
+      monitoredContactsCache: {
+        contacts: [],
+        fetchedAt: 0,
+      },
+    });
+  }
+  return sessions.get(normalized);
+}
+
+function currentBridgeSnapshot(session) {
+  return {
+    ...session.bridgeState,
+    session_key: session.sessionKey,
+    monitored_contacts: session.monitoredContactsCache.contacts.length,
+    socket_transport: "socket.io",
+  };
 }
 
 function normalizeKey(value) {
@@ -36,23 +69,29 @@ function normalizeKey(value) {
     .replace(/[^a-z0-9_-]/g, "");
 }
 
-function currentBridgeSnapshot() {
-  return {
-    ...bridgeState,
-    monitored_contacts: monitoredContactsCache.contacts.length,
-    socket_transport: "socket.io",
-  };
+function directKeyMatches(messageKey, monitorKey) {
+  if (!messageKey || !monitorKey) {
+    return false;
+  }
+  return (
+    messageKey === monitorKey ||
+    messageKey.endsWith(monitorKey) ||
+    monitorKey.endsWith(messageKey)
+  );
 }
 
-async function postStatus(status, reason = null, qr = null, connectedPhone = null) {
-  bridgeState = {
-    ...bridgeState,
+async function postStatus(sessionKey, status, reason = null, qr = null, connectedPhone = null) {
+  const resolvedSessionKey = resolveSessionKey(sessionKey);
+  const session = getSession(resolvedSessionKey);
+  session.bridgeState = {
+    ...session.bridgeState,
+    session_key: session.sessionKey,
     status,
     detail: reason,
     qr,
     connected_phone: connectedPhone,
   };
-  emitBridgeEvent("bridge_status", currentBridgeSnapshot());
+  emitBridgeEvent("bridge_status", currentBridgeSnapshot(session));
 
   try {
     await fetch(`${config.fastApiUrl}/api/whatsapp/status`, {
@@ -60,21 +99,31 @@ async function postStatus(status, reason = null, qr = null, connectedPhone = nul
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ status, reason, qr, connected_phone: connectedPhone }),
+      body: JSON.stringify({
+        bridge_session_key: session.sessionKey,
+        status,
+        reason,
+        qr,
+        connected_phone: connectedPhone,
+      }),
     });
   } catch (error) {
     console.warn("Could not post WhatsApp status to FastAPI:", error.message);
   }
 }
 
-async function sendIncomingMessage(message) {
+async function sendIncomingMessage(sessionKey, message) {
+  const resolvedSessionKey = resolveSessionKey(sessionKey);
   try {
     const response = await fetch(`${config.fastApiUrl}/api/whatsapp/messages/incoming`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(message),
+      body: JSON.stringify({
+        ...message,
+        bridge_session_key: resolvedSessionKey,
+      }),
     });
     if (!response.ok) {
       throw new Error(`FastAPI returned ${response.status}`);
@@ -83,6 +132,7 @@ async function sendIncomingMessage(message) {
   } catch (error) {
     console.warn("Could not send WhatsApp message to FastAPI:", error.message);
     emitBridgeEvent("bridge_error", {
+      session_key: resolvedSessionKey,
       type: "message_forward_failed",
       detail: error.message,
       message_id: message.message_id || null,
@@ -92,57 +142,64 @@ async function sendIncomingMessage(message) {
   }
 }
 
-async function fetchMonitoredContacts(force = false) {
-  const age = Date.now() - monitoredContactsCache.fetchedAt;
+async function fetchMonitoredContacts(sessionKey, force = false) {
+  const resolvedSessionKey = resolveSessionKey(sessionKey);
+  const session = getSession(resolvedSessionKey);
+  const age = Date.now() - session.monitoredContactsCache.fetchedAt;
   if (!force && age < config.monitorRefreshMs) {
-    return monitoredContactsCache.contacts;
+    return session.monitoredContactsCache.contacts;
   }
 
   try {
-    const response = await fetch(`${config.fastApiUrl}/api/whatsapp/monitored-contacts?active_only=true`);
+    const response = await fetch(
+      `${config.fastApiUrl}/api/whatsapp/bridge/monitored-contacts?active_only=true&session_key=${encodeURIComponent(resolvedSessionKey)}`
+    );
     if (!response.ok) {
       throw new Error(`FastAPI returned ${response.status}`);
     }
     const payload = await response.json();
-    monitoredContactsCache = {
+    session.monitoredContactsCache = {
       contacts: Array.isArray(payload.contacts) ? payload.contacts : [],
       fetchedAt: Date.now(),
     };
-    bridgeState = {
-      ...bridgeState,
-      monitored_contacts: monitoredContactsCache.contacts.length,
+    session.bridgeState = {
+      ...session.bridgeState,
+      monitored_contacts: session.monitoredContactsCache.contacts.length,
     };
     emitBridgeEvent("monitored_contacts", {
-      total: monitoredContactsCache.contacts.length,
-      contacts: monitoredContactsCache.contacts,
+      session_key: resolvedSessionKey,
+      total: session.monitoredContactsCache.contacts.length,
+      contacts: session.monitoredContactsCache.contacts,
     });
-    return monitoredContactsCache.contacts;
+    return session.monitoredContactsCache.contacts;
   } catch (error) {
     console.warn("Could not refresh monitored contacts:", error.message);
     emitBridgeEvent("bridge_error", {
+      session_key: resolvedSessionKey,
       type: "monitor_refresh_failed",
       detail: error.message,
     });
-    return monitoredContactsCache.contacts;
+    return session.monitoredContactsCache.contacts;
   }
 }
 
-async function shouldForwardMessage(message) {
-  const contacts = await fetchMonitoredContacts(false);
-  if (!contacts.length) {
+async function shouldForwardMessage(sessionKey, message) {
+  const contacts = await fetchMonitoredContacts(sessionKey, true);
+  if (config.singleAccountMode && config.forwardAllMessagesInSingleAccountMode) {
     return true;
   }
+  if (!contacts.length) {
+    return false;
+  }
 
-  const messageKeys = new Set(
-    [
-      message.group_id,
-      message.sender,
-      message.group_name,
-      message.sender_name,
-    ]
-      .map(normalizeKey)
-      .filter(Boolean)
-  );
+  const messageKeys = [
+    message.group_id,
+    message.sender,
+    message.group_name,
+    message.sender_name,
+  ]
+    .map(normalizeKey)
+    .filter(Boolean);
   const chatType = message.chat_type || "direct";
 
   return contacts.some((contact) => {
@@ -155,43 +212,55 @@ async function shouldForwardMessage(message) {
     const monitorKeys = [contact.chat_key, contact.phone_number, contact.contact_name]
       .map(normalizeKey)
       .filter(Boolean);
-    return monitorKeys.some((key) => messageKeys.has(key));
+    return monitorKeys.some((monitorKey) =>
+      messageKeys.some((messageKey) =>
+        chatType === "direct"
+          ? directKeyMatches(messageKey, monitorKey)
+          : messageKey === monitorKey
+      )
+    );
   });
 }
 
-async function restartBridge(reason = "Restart requested from control server.") {
-  if (isRestarting) {
+async function restartBridge(sessionKey, reason = "Restart requested from control server.") {
+  const resolvedSessionKey = resolveSessionKey(sessionKey);
+  const session = getSession(resolvedSessionKey);
+  if (session.isRestarting) {
     return;
   }
 
-  isRestarting = true;
-  bridgeState = { ...bridgeState, status: "restarting", detail: reason };
-  emitBridgeEvent("bridge_status", currentBridgeSnapshot());
+  session.isRestarting = true;
+  session.bridgeState = { ...session.bridgeState, status: "restarting", detail: reason };
+  emitBridgeEvent("bridge_status", currentBridgeSnapshot(session));
 
   try {
-    if (currentSocket?.end) {
-      currentSocket.end(new Error(reason));
+    if (session.socket?.end) {
+      session.socket.end(new Error(reason));
     }
   } catch (error) {
     console.warn("Could not close existing WhatsApp socket cleanly:", error.message);
   }
 
   setTimeout(() => {
-    startWhatsApp().catch((error) => {
-      console.error("Failed to restart WhatsApp bridge:", error);
+    startWhatsApp(resolvedSessionKey).catch((error) => {
+      console.error(`Failed to restart WhatsApp bridge for ${resolvedSessionKey}:`, error);
     });
   }, 300);
 }
 
-async function startWhatsApp() {
-  if (isRestarting) {
-    isRestarting = false;
+async function startWhatsApp(sessionKey) {
+  const resolvedSessionKey = resolveSessionKey(sessionKey);
+  const session = getSession(resolvedSessionKey);
+  if (session.isRestarting) {
+    session.isRestarting = false;
   }
 
-  await fetchMonitoredContacts(true);
-  await postStatus("starting", "Connecting to WhatsApp", null);
-  bridgeState = { ...bridgeState, status: "starting", detail: "Connecting to WhatsApp" };
-  const { state, saveCreds } = await useMultiFileAuthState(config.authPath);
+  await fetchMonitoredContacts(resolvedSessionKey, true);
+  await postStatus(resolvedSessionKey, "starting", "Connecting to WhatsApp", null);
+  session.bridgeState = { ...session.bridgeState, status: "starting", detail: "Connecting to WhatsApp" };
+
+  const authPath = path.resolve(process.cwd(), config.authPath, resolvedSessionKey);
+  const { state, saveCreds } = await useMultiFileAuthState(authPath);
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
@@ -201,24 +270,24 @@ async function startWhatsApp() {
     syncFullHistory: false,
   });
 
-  currentSocket = sock;
+  session.socket = sock;
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      console.log("Scan this QR code with WhatsApp.");
+      console.log(`Scan this QR code with WhatsApp for ${sessionKey}.`);
       qrcode.generate(qr, { small: true });
-      postStatus("qr_required", "Scan the QR code in WhatsApp Linked Devices.", qr);
+      postStatus(resolvedSessionKey, "qr_required", "Scan the QR code in WhatsApp Linked Devices.", qr);
     }
 
     if (connection === "connecting") {
-      postStatus("connecting", "Opening WhatsApp session.", null);
+      postStatus(resolvedSessionKey, "connecting", "Opening WhatsApp session.", null);
     }
 
     if (connection === "open") {
-      console.log("WhatsApp connection established.");
-      reconnectDelayMs = 3000;
-      postStatus("connected", "Bridge connected.", null, sock.user?.id || null);
+      console.log(`WhatsApp connection established for ${resolvedSessionKey}.`);
+      session.reconnectDelayMs = 3000;
+      postStatus(resolvedSessionKey, "connected", "Bridge connected.", null, sock.user?.id || null);
     }
 
     if (connection === "close") {
@@ -230,14 +299,14 @@ async function startWhatsApp() {
         null;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       const reason = describeDisconnect(statusCode, rawMessage);
-      postStatus("disconnected", reason, null);
+      postStatus(resolvedSessionKey, "disconnected", reason, null);
 
-      if (shouldReconnect && !isRestarting) {
-        const nextDelay = reconnectDelayMs;
-        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30000);
+      if (shouldReconnect && !session.isRestarting) {
+        const nextDelay = session.reconnectDelayMs;
+        session.reconnectDelayMs = Math.min(session.reconnectDelayMs * 2, 30000);
         setTimeout(() => {
-          startWhatsApp().catch((error) => {
-            console.error("Failed to restart WhatsApp bridge:", error);
+          startWhatsApp(resolvedSessionKey).catch((error) => {
+            console.error(`Failed to restart WhatsApp bridge for ${resolvedSessionKey}:`, error);
           });
         }, nextDelay);
       }
@@ -255,10 +324,13 @@ async function startWhatsApp() {
         continue;
       }
 
-      const shouldForward = await shouldForwardMessage(normalized);
-      if (!shouldForward) {
+      const forward = await shouldForwardMessage(sessionKey, normalized);
+      if (!forward) {
         emitBridgeEvent("message_skipped", {
-          reason: "unmonitored_chat",
+          session_key: resolvedSessionKey,
+          reason: session.monitoredContactsCache.contacts.length
+            ? "unmonitored_chat"
+            : "no_user_scope_configured",
           chat_key: normalized.group_id,
           chat_type: normalized.chat_type,
           message_id: normalized.message_id || null,
@@ -266,12 +338,13 @@ async function startWhatsApp() {
         continue;
       }
 
-      const result = await sendIncomingMessage(normalized);
+      const result = await sendIncomingMessage(resolvedSessionKey, normalized);
       if (!result || result.duplicate) {
         continue;
       }
 
       emitBridgeEvent("moderation_result", {
+        session_key: resolvedSessionKey,
         bridge_message: normalized,
         live_message: result.live_message || null,
         chat: result.chat || null,
@@ -285,16 +358,30 @@ async function startWhatsApp() {
 
 function startControlServer() {
   const server = http.createServer(async (req, res) => {
-    if (req.method === "GET" && req.url === "/health") {
+    const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+    const sessionKey = resolveSessionKey(url.searchParams.get("session_key"));
+
+    if (req.method === "GET" && url.pathname === "/health") {
+      if (!sessionKey) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "session_key is required" }));
+        return;
+      }
+      const session = getSession(sessionKey);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(currentBridgeSnapshot()));
+      res.end(JSON.stringify(currentBridgeSnapshot(session)));
       return;
     }
 
-    if (req.method === "POST" && req.url === "/restart") {
-      await restartBridge();
+    if (req.method === "POST" && url.pathname === "/restart") {
+      if (!sessionKey) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "session_key is required" }));
+        return;
+      }
+      await restartBridge(sessionKey);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, status: "restarting" }));
+      res.end(JSON.stringify({ ok: true, status: "restarting", session_key: sessionKey }));
       return;
     }
 
@@ -309,11 +396,14 @@ function startControlServer() {
     },
   });
   socketServer.on("connection", (socket) => {
-    socket.emit("bridge_status", currentBridgeSnapshot());
-    socket.emit("monitored_contacts", {
-      total: monitoredContactsCache.contacts.length,
-      contacts: monitoredContactsCache.contacts,
-    });
+    for (const session of sessions.values()) {
+      socket.emit("bridge_status", currentBridgeSnapshot(session));
+      socket.emit("monitored_contacts", {
+        session_key: session.sessionKey,
+        total: session.monitoredContactsCache.contacts.length,
+        contacts: session.monitoredContactsCache.contacts,
+      });
+    }
   });
 
   server.listen(config.controlPort, "127.0.0.1", () => {
@@ -322,10 +412,6 @@ function startControlServer() {
 }
 
 startControlServer();
-startWhatsApp().catch((error) => {
-  console.error("WhatsApp bridge crashed during startup:", error);
-  process.exitCode = 1;
-});
 
 function describeDisconnect(statusCode, rawMessage) {
   const message = String(rawMessage || "");
@@ -344,14 +430,8 @@ function describeDisconnect(statusCode, rawMessage) {
   if (statusCode === DisconnectReason.connectionReplaced) {
     return "This WhatsApp session was replaced by another linked device session.";
   }
-  if (message.includes("EACCES")) {
-    return "Baileys could not reach WhatsApp Web over HTTPS/WebSocket. Check firewall, proxy, VPN, or network policy.";
+  if (statusCode === DisconnectReason.timedOut) {
+    return "WhatsApp bridge timed out. Reconnecting.";
   }
-  if (message.includes("ENOTFOUND")) {
-    return "WhatsApp Web host could not be resolved. Check DNS or internet access.";
-  }
-  if (message.includes("ETIMEDOUT")) {
-    return "Connection to WhatsApp Web timed out. Check internet connectivity.";
-  }
-  return statusCode ? `Connection interrupted (code ${statusCode}). Reconnecting.` : "Connection lost. Reconnecting.";
+  return message || "WhatsApp connection closed.";
 }

@@ -2,8 +2,10 @@ import { BrowserRouter as Router, Link, Route, Routes, useLocation } from 'react
 import { Suspense, lazy, useEffect, useState } from 'react';
 import {
   Activity,
-  ArrowUpRight,
+  AlertTriangle,
   ArrowRight,
+  ArrowUpRight,
+  Building2,
   Eye,
   FileText,
   GraduationCap,
@@ -17,91 +19,69 @@ import {
   Sparkles,
   Upload,
   X,
-  Building2,
 } from 'lucide-react';
-import axios from 'axios';
-import { API_BASE_URL } from './lib/api';
+import { AUTH_CHANGED_EVENT, getStoredSession, storeSession, type AuthSession } from './lib/api';
 
 const ExportAnalyzer = lazy(() => import('./pages/ExportAnalyzer'));
+const DashboardPage = lazy(() => import('./pages/Dashboard'));
+const ReportsPage = lazy(() => import('./pages/Reports'));
 const Results = lazy(() => import('./pages/Results'));
 const ImageAnalyzer = lazy(() => import('./pages/ImageAnalyzer'));
 const RealtimeMonitor = lazy(() => import('./pages/RealtimeMonitor'));
 const AdminOperations = lazy(() => import('./pages/AdminOperations'));
+const SettingsPage = lazy(() => import('./pages/Settings'));
+const LoginPage = lazy(() => import('./pages/Login'));
+const RegisterPage = lazy(() => import('./pages/Register'));
 
-type DashboardSummary = {
-  total_chats: number;
-  total_messages: number;
-  flagged_messages: number;
-  safe_ratio: number;
-  recent_chats: Array<{
-    id: number;
-    chat_name: string;
-    platform: string;
-    created_at: string;
-    unsafe_percentage: number | null;
-    flagged_messages: number;
-  }>;
-};
-
-type BackendHealthSummary = {
-  bridge_ops: {
-    current_state: {
-      status: string;
-      connected_phone?: string | null;
-      bridge_reachable?: boolean;
-    };
-    recent_event_count: number;
-    recent_snapshot_count: number;
-    recent_window_hours: number;
-    bridge_reachable: boolean;
-    attention_required: boolean;
-  };
-  live_ops: {
-    live_summary: {
-      total_live_chats: number;
-      total_live_messages: number;
-      flagged_live_messages: number;
-      open_alerts: number;
-    };
-    recent_feed_count: number;
-    recent_alert_count: number;
-    flagged_chat_count: number;
-    high_risk_chat_count: number;
-    recent_window_hours: number;
-    attention_required: boolean;
-  };
-  recent_window_hours: number;
-  attention_required: boolean;
-  status: 'healthy' | 'attention';
-};
-
-const APP_NAV = [
+const USER_NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: Shield },
   { to: '/analyze', label: 'Analyze Chat', icon: MessageSquare },
+  { to: '/image-analyzer', label: 'Analyze Image', icon: Eye },
   { to: '/report', label: 'Report', icon: FileText },
-  { to: '/live', label: 'Live Monitor', icon: Smartphone },
-  { to: '/admin-ops', label: 'Admin Ops', icon: Activity },
+  { to: '/live', label: 'My Live Monitor', icon: Smartphone },
   { to: '/settings', label: 'Settings', icon: Lock },
 ];
 
-function AppPanel({
-  title,
-  eyebrow,
-  children,
-  className = '',
-}: {
-  title: string;
-  eyebrow?: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <section className={`rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] backdrop-blur md:p-6 ${className}`}>
-      {eyebrow && <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">{eyebrow}</p>}
-      <h2 className="text-xl font-semibold text-white md:text-2xl">{title}</h2>
-      <div className="mt-5">{children}</div>
-    </section>
-  );
+const ADMIN_NAV = [
+  { to: '/dashboard', label: 'Dashboard', icon: Shield },
+  { to: '/live', label: 'Live Monitoring', icon: Smartphone },
+  { to: '/admin-ops', label: 'System Health', icon: Activity },
+  { to: '/settings', label: 'Settings', icon: Lock },
+];
+
+function getWorkspaceNav(session: AuthSession | null) {
+  if ((session?.user.role ?? 'user') === 'admin') {
+    return ADMIN_NAV;
+  }
+  return USER_NAV;
+}
+
+function useAuthSessionState() {
+  const [session, setSession] = useState<AuthSession | null>(() => getStoredSession());
+
+  useEffect(() => {
+    const syncSession = () => {
+      setSession(getStoredSession());
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === 'safechat_auth') {
+        syncSession();
+      }
+    };
+
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener(AUTH_CHANGED_EVENT, syncSession as EventListener);
+    window.addEventListener('focus', syncSession);
+
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener(AUTH_CHANGED_EVENT, syncSession as EventListener);
+      window.removeEventListener('focus', syncSession);
+    };
+  }, []);
+
+  return session;
 }
 
 function StatCard({
@@ -128,245 +108,9 @@ function StatCard({
   );
 }
 
-function Dashboard() {
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [healthSummary, setHealthSummary] = useState<BackendHealthSummary | null>(null);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    const loadSummary = async () => {
-      const [dashboardResult, healthResult] = await Promise.allSettled([
-        axios.get(`${API_BASE_URL}/api/analyze/dashboard-summary`),
-        axios.get(`${API_BASE_URL}/api/whatsapp/health-summary`),
-      ]);
-
-      if (dashboardResult.status === 'fulfilled') {
-        setSummary(dashboardResult.value.data);
-      } else {
-        setError('Dashboard data is unavailable.');
-      }
-
-      if (healthResult.status === 'fulfilled') {
-        setHealthSummary(healthResult.value.data);
-      }
-    };
-
-    loadSummary();
-  }, []);
-
-  return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <div className="rounded-[28px] border border-white/8 bg-[linear-gradient(135deg,rgba(20,27,58,0.95),rgba(21,14,40,0.95))] p-6 shadow-[0_30px_120px_rgba(59,130,246,0.15)] md:p-8">
-        <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">MODERATION OVERVIEW</p>
-        <h1 className="text-3xl font-semibold tracking-tight text-white md:text-5xl">Operational safety dashboard</h1>
-        <p className="mt-4 max-w-3xl text-sm leading-7 text-slate-400 md:text-base">
-          Live visibility into uploaded analyses, flagged content, and review coverage across the current SafeChat AI workspace.
-        </p>
-
-        <div className="mt-6 grid gap-4 md:grid-cols-3">
-          <StatCard label="Total chats analyzed" value={summary?.total_chats ?? 0} tone="cyan" />
-          <StatCard label="Flagged messages" value={summary?.flagged_messages ?? 0} tone="rose" />
-          <StatCard label="Safe ratio" value={`${summary?.safe_ratio?.toFixed(1) ?? '100.0'}%`} tone="emerald" />
-        </div>
-      </div>
-
-      <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-        <AppPanel title="Recent analyses" eyebrow="QUEUE">
-          <div className="space-y-3">
-            {summary?.recent_chats?.length ? summary.recent_chats.map((chat) => (
-              <Link
-                key={chat.id}
-                to={`/results/${chat.id}`}
-                className="block rounded-[20px] border border-white/6 bg-slate-950/60 p-4 transition hover:border-cyan-500/30 hover:bg-slate-950"
-              >
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="font-medium text-slate-100">{chat.chat_name}</p>
-                    <p className="mt-1 text-sm text-slate-400">{chat.platform} • {new Date(chat.created_at).toLocaleString()}</p>
-                  </div>
-                  <div className="flex items-center gap-6 text-sm">
-                    <div>
-                      <p className="text-slate-500">Flagged</p>
-                      <p className="font-medium text-rose-400">{chat.flagged_messages}</p>
-                    </div>
-                    <div>
-                      <p className="text-slate-500">Unsafe</p>
-                      <p className="font-medium text-amber-400">{chat.unsafe_percentage?.toFixed(1) ?? '0.0'}%</p>
-                    </div>
-                  </div>
-                </div>
-              </Link>
-            )) : (
-              <div className="rounded-[20px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-slate-400">
-                No analyses yet. Upload a chat export to populate the dashboard.
-              </div>
-            )}
-          </div>
-        </AppPanel>
-
-        <AppPanel title="Coverage" eyebrow="STATUS">
-          <div className="space-y-4">
-            <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-5">
-              <p className="text-sm text-slate-400">Total messages analyzed</p>
-              <p className="mt-3 text-3xl font-semibold text-white">{summary?.total_messages ?? 0}</p>
-            </div>
-            <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-5">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <p className="text-sm text-slate-400">Backend health</p>
-                  <p className={`mt-3 text-2xl font-semibold ${healthSummary?.status === 'attention' ? 'text-amber-300' : 'text-emerald-300'}`}>
-                    {healthSummary?.status ?? 'unknown'}
-                  </p>
-                </div>
-                <span className={`rounded-full px-3 py-1.5 text-xs ${healthSummary?.attention_required ? 'border border-amber-500/20 bg-amber-500/10 text-amber-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
-                  {healthSummary?.attention_required ? 'Needs review' : 'Stable'}
-                </span>
-              </div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Bridge ops</p>
-                  <p className="mt-2 text-sm text-white">
-                    {healthSummary?.bridge_ops.current_state.status ?? 'unknown'}
-                    {healthSummary?.bridge_ops.bridge_reachable ? ' · reachable' : ' · offline'}
-                  </p>
-                  <p className="mt-2 text-xs text-slate-400">
-                    {healthSummary?.bridge_ops.recent_event_count ?? 0} events · {healthSummary?.bridge_ops.recent_snapshot_count ?? 0} snapshots
-                  </p>
-                </div>
-                <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Live ops</p>
-                  <p className="mt-2 text-sm text-white">
-                    {healthSummary?.live_ops.live_summary.total_live_chats ?? 0} chats · {healthSummary?.live_ops.live_summary.total_live_messages ?? 0} messages
-                  </p>
-                  <p className="mt-2 text-xs text-slate-400">
-                    {healthSummary?.live_ops.live_summary.flagged_live_messages ?? 0} flagged · {healthSummary?.live_ops.live_summary.open_alerts ?? 0} open alerts
-                  </p>
-                </div>
-              </div>
-              {healthSummary?.bridge_ops.current_state.connected_phone && (
-                <p className="mt-4 text-xs text-cyan-300">
-                  Connected account: {healthSummary.bridge_ops.current_state.connected_phone}
-                </p>
-              )}
-            </div>
-            <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-5">
-              <p className="text-sm text-slate-400">Current capabilities</p>
-              <p className="mt-3 text-sm leading-7 text-slate-300">
-                Offline export analysis is live. Real-time WhatsApp monitoring is available via the WhatsApp bridge and websocket feed.
-              </p>
-            </div>
-            {error && <p className="text-sm text-rose-400">{error}</p>}
-          </div>
-        </AppPanel>
-      </div>
-    </div>
-  );
-}
-
-function ReportsPage() {
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    const loadSummary = async () => {
-      try {
-        const response = await axios.get(`${API_BASE_URL}/api/analyze/dashboard-summary`);
-        setSummary(response.data);
-      } catch {
-        setError('Reports are unavailable right now.');
-      }
-    };
-
-    loadSummary();
-  }, []);
-
-  return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <AppPanel title="Analysis reports" eyebrow="REPORT CENTER">
-        <p className="max-w-3xl text-sm leading-7 text-slate-400 md:text-base">
-          Review recent analyses and open full result pages backed by your current database.
-        </p>
-
-        <div className="mt-6 grid gap-4 md:grid-cols-3">
-          <StatCard label="Chats analyzed" value={summary?.total_chats ?? 0} tone="cyan" />
-          <StatCard label="Flagged messages" value={summary?.flagged_messages ?? 0} tone="rose" />
-          <StatCard label="Safe ratio" value={`${summary?.safe_ratio?.toFixed(1) ?? '100.0'}%`} tone="emerald" />
-        </div>
-      </AppPanel>
-
-      <AppPanel title="Recent reports" className="pb-4">
-        <div className="space-y-3">
-          {summary?.recent_chats?.length ? summary.recent_chats.map((chat) => (
-            <Link
-              key={chat.id}
-              to={`/results/${chat.id}`}
-              className="flex flex-col gap-4 rounded-[20px] border border-white/6 bg-slate-950/70 px-5 py-4 transition hover:border-cyan-500/30 sm:flex-row sm:items-center sm:justify-between"
-            >
-              <div>
-                <p className="font-medium text-white">{chat.chat_name}</p>
-                <p className="mt-1 text-sm text-slate-400">{chat.platform} • {new Date(chat.created_at).toLocaleString()}</p>
-              </div>
-              <div className="flex items-center gap-6 text-sm">
-                <div>
-                  <p className="text-slate-500">Flagged</p>
-                  <p className="font-medium text-rose-400">{chat.flagged_messages}</p>
-                </div>
-                <div>
-                  <p className="text-slate-500">Unsafe</p>
-                  <p className="font-medium text-amber-400">{chat.unsafe_percentage?.toFixed(1) ?? '0.0'}%</p>
-                </div>
-              </div>
-            </Link>
-          )) : (
-            <div className="rounded-[20px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-slate-400">
-              No reports yet. Run an analysis from Analyze Chat first.
-            </div>
-          )}
-        </div>
-        {error && <p className="mt-4 text-sm text-rose-400">{error}</p>}
-      </AppPanel>
-    </div>
-  );
-}
-
-function SettingsPage() {
-  return (
-    <div className="mx-auto max-w-6xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <AppPanel title="Privacy & data" eyebrow="SETTINGS & PRIVACY">
-        <p className="max-w-3xl text-sm leading-7 text-slate-400 md:text-base">
-          How this SafeChat AI prototype handles conversations and analysis results across the current environment.
-        </p>
-      </AppPanel>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        {[
-          ['Local-first processing', 'Chat content is analyzed inside your current app flow and stays tied to your local environment.'],
-          ['Session review', 'Use dashboard and report pages to review results without exposing message data to third-party dashboards.'],
-          ['Prototype backend', 'When you use the connected backend, request handling stays within this project stack.'],
-          ['No model training', 'Your conversation data is not used to train or fine-tune the moderation models.'],
-        ].map(([title, text]) => (
-          <AppPanel key={title} title={title} className="h-full">
-            <div className="flex items-start gap-4">
-              <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-3">
-                <Lock className="h-5 w-5 text-cyan-300" />
-              </div>
-              <p className="text-sm leading-7 text-slate-400">{text}</p>
-            </div>
-          </AppPanel>
-        ))}
-      </div>
-
-      <AppPanel title="Risk disclaimer">
-        <p className="text-sm leading-7 text-slate-300 md:text-base">
-          SafeChat AI is a moderation aid. Toxicity and threat classification can produce false positives and false negatives, so sensitive decisions still need human review.
-        </p>
-      </AppPanel>
-    </div>
-  );
-}
-
-function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+function Sidebar({ onNavigate, session }: { onNavigate?: () => void; session: AuthSession | null }) {
   const location = useLocation();
+  const navItems = getWorkspaceNav(session);
 
   return (
     <div className="flex h-full w-full flex-col border-r border-white/8 bg-slate-950/85 backdrop-blur">
@@ -381,7 +125,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       <nav className="flex-1 space-y-2 px-4 py-5">
-        {APP_NAV.map(({ to, label, icon: Icon }) => {
+        {navItems.map(({ to, label, icon: Icon }) => {
           const active = location.pathname === to;
           return (
             <Link
@@ -410,7 +154,14 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           <ArrowUpRight className="h-4 w-4" />
           Landing Page
         </Link>
-        <button className="flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-300">
+        <button
+          type="button"
+          onClick={() => {
+            storeSession(null);
+            window.location.assign('/settings');
+          }}
+          className="flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-300"
+        >
           <LogOut className="h-4 w-4" />
           Logout
         </button>
@@ -419,9 +170,9 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-function AppTopBar({ onMenu }: { onMenu: () => void }) {
+function AppTopBar({ onMenu, session }: { onMenu: () => void; session: AuthSession | null }) {
   const location = useLocation();
-  const current = APP_NAV.find((item) => item.to === location.pathname);
+  const current = getWorkspaceNav(session).find((item) => item.to === location.pathname);
 
   return (
     <div className="sticky top-0 z-30 border-b border-white/6 bg-slate-950/75 px-4 py-4 backdrop-blur sm:px-6 lg:px-8">
@@ -451,6 +202,7 @@ function AppTopBar({ onMenu }: { onMenu: () => void }) {
 
 function Layout({ children }: { children: React.ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const session = useAuthSessionState();
 
   return (
     <div className="min-h-screen bg-[#060915] text-slate-100">
@@ -460,7 +212,7 @@ function Layout({ children }: { children: React.ReactNode }) {
       <div className="relative flex min-h-screen">
         <aside className="hidden w-72 shrink-0 lg:block">
           <div className="sticky top-0 h-screen p-4">
-            <Sidebar />
+            <Sidebar session={session} />
           </div>
         </aside>
 
@@ -477,14 +229,14 @@ function Layout({ children }: { children: React.ReactNode }) {
                 </button>
               </div>
               <div className="h-[calc(100%-56px)]">
-                <Sidebar onNavigate={() => setMobileMenuOpen(false)} />
+                <Sidebar session={session} onNavigate={() => setMobileMenuOpen(false)} />
               </div>
             </div>
           </div>
         )}
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <AppTopBar onMenu={() => setMobileMenuOpen(true)} />
+          <AppTopBar session={session} onMenu={() => setMobileMenuOpen(true)} />
           <main className="flex-1 pb-24 lg:pb-8">{children}</main>
         </div>
       </div>
@@ -579,12 +331,20 @@ function LandingPage() {
               <a href="#for-you" className="transition hover:text-white">For you</a>
             </nav>
 
-            <Link
-              to="/dashboard"
-              className="rounded-full border border-cyan-500/35 px-4 py-2.5 text-sm font-medium text-white transition hover:border-cyan-400 hover:bg-cyan-500/10 sm:px-5"
-            >
-              Launch app
-            </Link>
+            <div className="flex items-center gap-2">
+              <Link
+                to="/login"
+                className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:border-white/20 hover:bg-white/[0.04] sm:px-5"
+              >
+                Login
+              </Link>
+              <Link
+                to="/register"
+                className="rounded-full border border-cyan-500/35 px-4 py-2.5 text-sm font-medium text-white transition hover:border-cyan-400 hover:bg-cyan-500/10 sm:px-5"
+              >
+                Register
+              </Link>
+            </div>
           </header>
 
           <main className="mx-auto max-w-6xl pt-16 text-center sm:pt-20 lg:pt-24">
@@ -734,7 +494,7 @@ function LandingPage() {
                   <div key={step} className="bg-slate-950/45 p-6 transition hover:bg-slate-950/60 md:p-7">
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium text-violet-400">{step}</span>
-                      <div className="h-px flex-1 bg-gradient-to-r from-violet-500/30 to-transparent ml-4" />
+                      <div className="ml-4 h-px flex-1 bg-gradient-to-r from-violet-500/30 to-transparent" />
                     </div>
                     <h3 className="mt-5 text-xl font-semibold text-white">{title}</h3>
                     <p className="mt-3 text-sm leading-7 text-slate-400">{text}</p>
@@ -798,21 +558,97 @@ function AppShell({ children }: { children: React.ReactNode }) {
   return <Layout>{children}</Layout>;
 }
 
+function AccessGate({
+  title,
+  message,
+}: {
+  title: string;
+  message: string;
+}) {
+  return (
+    <div className="mx-auto flex min-h-[calc(100vh-10rem)] max-w-3xl items-center justify-center px-4 py-8 sm:px-6 lg:px-8">
+      <section className="w-full max-w-xl rounded-[28px] border border-white/8 bg-slate-900/85 p-6 text-center shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-8">
+        <div className="mx-auto inline-flex rounded-3xl border border-cyan-500/20 bg-cyan-500/10 p-4">
+          <AlertTriangle className="h-8 w-8 text-cyan-300" />
+        </div>
+        <p className="mt-5 text-xs uppercase tracking-[0.22em] text-cyan-400">PROTECTED PAGE</p>
+        <h2 className="mt-3 text-3xl font-semibold text-white">{title}</h2>
+        <p className="mt-4 text-sm leading-7 text-slate-400 md:text-base">{message}</p>
+        <div className="mt-6 flex flex-wrap justify-center gap-3">
+          <Link
+            to="/login"
+            className="inline-flex min-h-11 items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:brightness-110"
+          >
+            Login
+          </Link>
+          <Link
+            to="/register"
+            className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-white/8 bg-white/[0.04] px-5 py-3 text-sm font-medium text-white transition hover:bg-white/[0.08]"
+          >
+            Register
+          </Link>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const session = getStoredSession();
+
+  if (!session) {
+    return (
+      <AccessGate
+        title="Login required"
+        message="To use this feature or access this page, login first or register first."
+      />
+    );
+  }
+
+  return <>{children}</>;
+}
+
+function RequireAdmin({ children }: { children: React.ReactNode }) {
+  const session = getStoredSession();
+
+  if (!session) {
+    return (
+      <AccessGate
+        title="Login required"
+        message="To use this feature or access this page, login first or register first."
+      />
+    );
+  }
+
+  if (session.user.role !== 'admin') {
+    return (
+      <AccessGate
+        title="Admin access required"
+        message="This page is available only for administrator accounts."
+      />
+    );
+  }
+
+  return <>{children}</>;
+}
+
 function App() {
   return (
     <Router>
       <Routes>
         <Route path="/" element={<LandingPage />} />
-        <Route path="/dashboard" element={<AppShell><Dashboard /></AppShell>} />
+        <Route path="/dashboard" element={<AppShell><RequireAuth><Suspense fallback={<RouteFallback />}><DashboardPage /></Suspense></RequireAuth></AppShell>} />
         <Route path="/analyze" element={<AppShell><Suspense fallback={<RouteFallback />}><ExportAnalyzer /></Suspense></AppShell>} />
-        <Route path="/report" element={<AppShell><ReportsPage /></AppShell>} />
-        <Route path="/live" element={<AppShell><Suspense fallback={<RouteFallback />}><RealtimeMonitor /></Suspense></AppShell>} />
-        <Route path="/admin-ops" element={<AppShell><Suspense fallback={<RouteFallback />}><AdminOperations /></Suspense></AppShell>} />
-        <Route path="/settings" element={<AppShell><SettingsPage /></AppShell>} />
+        <Route path="/report" element={<AppShell><RequireAuth><Suspense fallback={<RouteFallback />}><ReportsPage /></Suspense></RequireAuth></AppShell>} />
+        <Route path="/live/*" element={<AppShell><RequireAuth><Suspense fallback={<RouteFallback />}><RealtimeMonitor /></Suspense></RequireAuth></AppShell>} />
+        <Route path="/admin-ops" element={<AppShell><RequireAdmin><Suspense fallback={<RouteFallback />}><AdminOperations /></Suspense></RequireAdmin></AppShell>} />
+        <Route path="/settings" element={<AppShell><RequireAuth><Suspense fallback={<RouteFallback />}><SettingsPage /></Suspense></RequireAuth></AppShell>} />
+        <Route path="/login" element={<Suspense fallback={<RouteFallback />}><LoginPage /></Suspense>} />
+        <Route path="/register" element={<Suspense fallback={<RouteFallback />}><RegisterPage /></Suspense>} />
         <Route path="/export-analyzer" element={<AppShell><Suspense fallback={<RouteFallback />}><ExportAnalyzer /></Suspense></AppShell>} />
         <Route path="/results/:id" element={<AppShell><Suspense fallback={<RouteFallback />}><Results /></Suspense></AppShell>} />
-        <Route path="/image-analyzer" element={<AppShell><Suspense fallback={<RouteFallback />}><ImageAnalyzer /></Suspense></AppShell>} />
-        <Route path="/realtime-monitor" element={<AppShell><Suspense fallback={<RouteFallback />}><RealtimeMonitor /></Suspense></AppShell>} />
+        <Route path="/image-analyzer" element={<AppShell><RequireAuth><Suspense fallback={<RouteFallback />}><ImageAnalyzer /></Suspense></RequireAuth></AppShell>} />
+        <Route path="/realtime-monitor/*" element={<AppShell><RequireAuth><Suspense fallback={<RouteFallback />}><RealtimeMonitor /></Suspense></RequireAuth></AppShell>} />
       </Routes>
     </Router>
   );

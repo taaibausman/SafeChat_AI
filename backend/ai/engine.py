@@ -2,6 +2,15 @@ import os
 import threading
 import torch
 
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+
+def _env_flag(name: str) -> bool:
+    value = (os.environ.get(name) or "").strip().lower()
+    return value not in {"", "0", "false", "no", "off"}
+
+
 # Lazy load models to speed up initial server start
 class AIEngine:
     def __init__(self):
@@ -12,9 +21,38 @@ class AIEngine:
         self.models_loaded = False
         self.models_loading = False
         self._load_lock = threading.Lock()
-        self.disable_models = bool(os.environ.get("SAFECHAT_DISABLE_MODELS", ""))
+        self.disable_models = _env_flag("SAFECHAT_DISABLE_MODELS")
         self.flag_threshold = float(os.environ.get("SAFECHAT_FLAG_THRESHOLD", "55"))
         self.block_threshold = float(os.environ.get("SAFECHAT_BLOCK_THRESHOLD", "85"))
+        self.custom_model_path = self._resolve_custom_model_path()
+
+    def _resolve_custom_model_path(self) -> str | None:
+        configured = (os.environ.get("SAFECHAT_CUSTOM_MODEL_PATH") or "").strip()
+        candidate_paths = []
+        if configured:
+            candidate_paths.append(
+                configured if os.path.isabs(configured) else os.path.join(ROOT_DIR, configured)
+            )
+        candidate_paths.extend(
+            [
+                os.path.join(ROOT_DIR, "classifier"),
+                os.path.join(ROOT_DIR, "best_model"),
+            ]
+        )
+
+        seen: set[str] = set()
+        for candidate in candidate_paths:
+            normalized = os.path.abspath(candidate)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            if os.path.isdir(normalized):
+                return normalized
+        return None
+
+    def _is_unsafe_binary_label(self, label: str | None) -> bool:
+        normalized = str(label or "").strip().lower()
+        return normalized in {"unsafe", "label_1", "1", "true", "toxic", "harmful"}
 
     def action_for_score(self, score: float | int | None) -> str:
         normalized = float(score or 0.0)
@@ -43,8 +81,8 @@ class AIEngine:
         try:
             if self.binary_model is None:
                 print("Loading custom binary model...")
-                model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "best_model")
-                if os.path.isdir(model_path):
+                model_path = self.custom_model_path
+                if model_path:
                     try:
                         # import transformers pipeline lazily
                         from transformers import pipeline as _pipeline
@@ -53,7 +91,7 @@ class AIEngine:
                         print(f"Warning: Could not load custom model from {model_path}. Error: {e}")
                         self.binary_model = None
                 else:
-                    print(f"Custom binary model path not found: {model_path}. Skipping custom model.")
+                    print("Custom binary model path not found. Checked SAFECHAT_CUSTOM_MODEL_PATH, classifier/, and best_model/. Skipping custom model.")
                     self.binary_model = None
 
             if self.toxicity_model is None:
@@ -115,11 +153,11 @@ class AIEngine:
                 # Truncate text if needed
                 res = self.binary_model(text[:512])[0]
                 binary_label = res['label'].lower()
-                # Assuming labels are like LABEL_0 and LABEL_1 or safe/unsafe
-                if binary_label == 'unsafe' or binary_label == 'label_1' or binary_label == '1':
-                    binary_score = res['score']
+                confidence = float(res.get('score', 0.0))
+                if self._is_unsafe_binary_label(binary_label):
+                    binary_score = confidence
                 else:
-                    binary_score = 1.0 - res['score']
+                    binary_score = 1.0 - confidence
             except Exception:
                 pass
 
@@ -170,6 +208,8 @@ class AIEngine:
                 "block": self.block_threshold,
             },
             "details": {
+                "custom_model_path": self.custom_model_path,
+                "binary_label": binary_label,
                 "binary_score": binary_score,
                 "toxicity": tox_results
             }

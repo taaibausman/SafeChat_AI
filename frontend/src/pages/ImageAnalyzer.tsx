@@ -49,25 +49,32 @@ export default function ImageAnalyzer() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <section className="overflow-hidden rounded-[28px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-6 shadow-[0_30px_120px_rgba(59,130,246,0.15)] md:p-8">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-5 shadow-[0_30px_120px_rgba(59,130,246,0.12)] md:p-6">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
           <div className="max-w-3xl">
             <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">IMAGE ANALYZER</p>
-            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-5xl">Screenshot OCR review</h1>
-            <p className="mt-4 text-sm leading-7 text-slate-400 md:text-base">
-              Upload a chat screenshot and extract the text for the same moderation pipeline used by export analysis.
+            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-[3rem]">Screenshot OCR review</h1>
+            <p className="mt-3 text-sm leading-7 text-slate-400 md:text-base">
+              Upload a chat screenshot to extract text and generate a moderation report.
             </p>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3 lg:w-[30rem]">
+          <div className="grid gap-3 sm:grid-cols-3 lg:w-[22rem]">
             {[
-              ['Input', 'Chat image'],
-              ['Output', 'OCR + report'],
-              ['Formats', 'JPG, PNG, WEBP'],
-            ].map(([label, value]) => (
+              { label: 'Input', value: 'Chat image', icon: ImageIcon },
+              { label: 'Output', value: 'OCR + report', icon: ScanLine },
+              { label: 'Formats', value: 'JPG, PNG, WEBP', icon: Shield },
+            ].map(({ label, value, icon: Icon }) => (
               <div key={label} className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
-                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</p>
-                <p className="mt-2 text-sm font-medium text-white">{value}</p>
+                <div className="flex items-center gap-3">
+                  <div className="rounded-xl bg-cyan-500/10 p-2 text-cyan-300">
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="text-[11px] text-slate-500">{label}</p>
+                    <p className="mt-1 text-sm font-medium text-white">{value}</p>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
@@ -75,21 +82,16 @@ export default function ImageAnalyzer() {
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
           <div
-            className="cursor-pointer rounded-[24px] border-2 border-dashed border-white/10 bg-slate-950/55 p-8 text-center transition hover:border-cyan-500/35 hover:bg-slate-950/70 sm:p-12"
+            className="cursor-pointer rounded-[24px] border-2 border-dashed border-blue-500/40 bg-[linear-gradient(180deg,rgba(8,16,35,0.96),rgba(11,18,34,0.88))] p-8 text-center transition hover:border-cyan-500/45 hover:bg-slate-950/70 sm:p-12"
             onClick={() => document.getElementById('image-upload')?.click()}
           >
-            <div className="mx-auto inline-flex rounded-3xl border border-cyan-500/20 bg-cyan-500/10 p-4">
+            <div className="mx-auto inline-flex rounded-[22px] border border-cyan-500/20 bg-cyan-500/10 p-5">
               <ScanLine className="h-10 w-10 text-cyan-300" />
             </div>
             <h3 className="mt-6 text-2xl font-semibold text-white">Drop screenshot or click to upload</h3>
-            <p className="mt-3 text-sm leading-7 text-slate-400">
-              Use this when you only have a screenshot. The OCR extractor will pull text first, then forward it to the moderation engine.
-            </p>
-            <div className="mt-5 inline-flex rounded-full border border-white/8 bg-white/[0.03] px-4 py-2 text-xs text-slate-300">
-              Best for screenshots and shared chat images
-            </div>
+            <p className="mt-3 text-sm text-slate-400">Supported formats: `JPG`, `PNG`, `WEBP`</p>
             <input type="file" id="image-upload" className="hidden" accept="image/*" onChange={handleFileChange} />
           </div>
 
@@ -130,38 +132,31 @@ export default function ImageAnalyzer() {
           )}
         </section>
 
-        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
-          <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">PIPELINE</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">How screenshot analysis works</h2>
+        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+          <h2 className="text-2xl font-semibold text-white">What happens after upload</h2>
 
           <div className="mt-6 space-y-4">
             {[
               {
-                icon: ScanLine,
                 title: 'Extract visible text',
-                text: 'OCR reads the screenshot and reconstructs the chat content before moderation begins.',
+                text: 'OCR reads the screenshot and reconstructs the chat content.',
               },
               {
-                icon: Shield,
-                title: 'Run the same safety checks',
-                text: 'Extracted text is scored using the same moderation workflow as uploaded exports.',
+                title: 'Score content',
+                text: 'Extracted text is checked by the moderation pipeline.',
               },
               {
-                icon: ImageIcon,
-                title: 'Open a full report',
-                text: 'The result is routed into the report view so you can inspect flagged lines and review context.',
+                title: 'View report',
+                text: 'Open the result page to inspect flagged lines and summary.',
               },
-            ].map(({ icon: Icon, title, text }, index) => (
-              <div key={title} className="flex gap-4 rounded-[22px] border border-white/8 bg-slate-950/55 p-4">
-                <div className="flex flex-col items-center">
-                  <div className="inline-flex rounded-2xl border border-white/8 bg-white/[0.04] p-3">
-                    <Icon className="h-5 w-5 text-cyan-300" />
-                  </div>
-                  {index < 2 && <div className="mt-3 h-full w-px bg-gradient-to-b from-cyan-500/35 to-transparent" />}
+            ].map(({ title, text }, index) => (
+              <div key={title} className="flex items-start gap-4 rounded-[20px] border border-white/8 bg-slate-950/55 p-4">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-500/25 bg-cyan-500/10 text-sm font-semibold text-cyan-300">
+                  {index + 1}
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-white">{title}</h3>
-                  <p className="mt-2 text-sm leading-7 text-slate-400">{text}</p>
+                  <h3 className="text-base font-semibold text-white">{title}</h3>
+                  <p className="mt-1 text-sm leading-6 text-slate-400">{text}</p>
                 </div>
               </div>
             ))}

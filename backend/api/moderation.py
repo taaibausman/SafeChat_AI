@@ -6,7 +6,12 @@ from sqlalchemy.orm import Session
 import backend.models.domain as models
 import backend.schemas.domain as schemas
 from backend.ai.engine import ai_engine
-from backend.api.image_analyzer import extract_text_from_image_bytes, persist_image_analysis
+from backend.api.image_analyzer import (
+    extract_text_from_image_bytes,
+    persist_image_analysis,
+    _segment_ocr_text_into_messages,
+)
+from backend.api.chat_analyzer import _build_analysis_payload
 from backend.auth import get_current_admin, get_current_user
 from backend.database.config import get_db
 
@@ -140,15 +145,38 @@ async def moderate_image(
     content = await file.read()
     extracted_text = extract_text_from_image_bytes(content)
     analysis = ai_engine.analyze_message(extracted_text)
-    chat, message = persist_image_analysis(
+    chat, _image_scan = persist_image_analysis(
         db=db,
         filename=file.filename or "uploaded-image",
         extracted_text=extracted_text,
-        analysis=analysis,
+    )
+    parsed_messages = _segment_ocr_text_into_messages(extracted_text)
+    _total_messages, analysis_result, _ = _build_analysis_payload(
+        parsed_messages,
+        chat.id,
+        chat.chat_name,
+        persist=True,
+        db=db,
+    )
+    db.add(
+        models.AnalysisResult(
+            chat_id=chat.id,
+            overall_score=analysis_result.overall_score,
+            safe_percentage=analysis_result.safe_percentage,
+            unsafe_percentage=analysis_result.unsafe_percentage,
+            summary=analysis_result.summary,
+        )
+    )
+    db.commit()
+    message = (
+        db.query(models.Message)
+        .filter(models.Message.chat_id == chat.id)
+        .order_by(models.Message.id.desc())
+        .first()
     )
     return schemas.ModerateImageResponse(
         chat_id=chat.id,
-        message_id=message.id,
+        message_id=message.id if message else None,
         extracted_text=extracted_text,
         action=analysis.get("action") or ai_engine.action_for_score(analysis["risk_score"]),
         severity=analysis.get("severity") or ai_engine.severity_for_score(analysis["risk_score"]),

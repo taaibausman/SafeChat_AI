@@ -31,6 +31,21 @@ body {
   min-height: 100vh;
 }
 
+img,
+svg,
+video,
+canvas {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
 ::selection {
   background: rgba(34, 211, 238, 0.28);
   color: white;
@@ -60,4 +75,25 @@ body {
 a,
 button {
   -webkit-tap-highlight-color: transparent;
+}
+
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .backdrop-blur,
+  .backdrop-blur-sm {
+    background-color: rgba(2, 6, 23, 0.92) !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

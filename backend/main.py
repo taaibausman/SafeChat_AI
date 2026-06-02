@@ -19,7 +19,9 @@ from backend.api.realtime import router as realtime_router
 from backend.api.users import router as users_router
 from backend.api.whatsapp import router as whatsapp_router
 from backend.ai.engine import ai_engine
+from backend.bootstrap import ensure_default_admin
 from backend.database.config import engine, Base
+from backend.database.config import SessionLocal
 from backend.database.migrations import run_migrations
 
 
@@ -27,6 +29,11 @@ from backend.database.migrations import run_migrations
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     run_migrations(engine)
+    db = SessionLocal()
+    try:
+        ensure_default_admin(db)
+    finally:
+        db.close()
     # Schedule model loading in background so startup isn't blocked.
     try:
         asyncio.create_task(asyncio.to_thread(ai_engine._load_models))

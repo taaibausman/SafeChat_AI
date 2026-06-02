@@ -392,8 +392,58 @@ def _migration_20260530_003_whatsapp_monitor_scope(engine: Engine) -> None:
     )
 
 
+def _migration_20260601_001_whatsapp_bridge_sessions(engine: Engine) -> None:
+    if _has_table(engine, "whatsapp_bridge_state"):
+        _ensure_columns(
+            engine,
+            "whatsapp_bridge_state",
+            {
+                "user_id": "INTEGER",
+                "session_key": "VARCHAR",
+            },
+        )
+
+    if _has_table(engine, "whatsapp_bridge_events"):
+        _ensure_columns(
+            engine,
+            "whatsapp_bridge_events",
+            {
+                "user_id": "INTEGER",
+                "session_key": "VARCHAR",
+            },
+        )
+
+    if _has_table(engine, "whatsapp_bridge_state_snapshots"):
+        _ensure_columns(
+            engine,
+            "whatsapp_bridge_state_snapshots",
+            {
+                "user_id": "INTEGER",
+                "session_key": "VARCHAR",
+            },
+        )
+
+    statements: list[str] = []
+    if _has_table(engine, "chats"):
+        statements.append("CREATE INDEX IF NOT EXISTS ix_chats_platform_user_id_external_chat_id ON chats (platform, user_id, external_chat_id)")
+    if _has_table(engine, "whatsapp_bridge_state"):
+        statements.extend(
+            [
+                "CREATE INDEX IF NOT EXISTS ix_whatsapp_bridge_state_user_id ON whatsapp_bridge_state (user_id)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_whatsapp_bridge_state_session_key ON whatsapp_bridge_state (session_key)",
+            ]
+        )
+    if _has_table(engine, "whatsapp_bridge_events"):
+        statements.append("CREATE INDEX IF NOT EXISTS ix_whatsapp_bridge_events_user_id_created_at ON whatsapp_bridge_events (user_id, created_at)")
+    if _has_table(engine, "whatsapp_bridge_state_snapshots"):
+        statements.append("CREATE INDEX IF NOT EXISTS ix_whatsapp_bridge_state_snapshots_user_id_created_at ON whatsapp_bridge_state_snapshots (user_id, created_at)")
+    if statements:
+        _ensure_indexes(engine, statements)
+
+
 MIGRATIONS: list[tuple[str, MigrationFunc]] = [
     ("20260530_001_whatsapp_live_schema", _migration_20260530_001_whatsapp_live_schema),
     ("20260530_002_core_database_alignment", _migration_20260530_002_core_database_alignment),
     ("20260530_003_whatsapp_monitor_scope", _migration_20260530_003_whatsapp_monitor_scope),
+    ("20260601_001_whatsapp_bridge_sessions", _migration_20260601_001_whatsapp_bridge_sessions),
 ]

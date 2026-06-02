@@ -5,20 +5,51 @@ import {
   AlertTriangle,
   ArrowLeft,
   Clock3,
+  Download,
   MessageSquareWarning,
   ShieldAlert,
   ShieldCheck,
 } from 'lucide-react';
-import { apiClient } from '../lib/api';
+import { apiClient, getGuestReport } from '../lib/api';
+
+type ReportMessage = {
+  sender: string;
+  message: string;
+  timestamp?: string | null;
+  risk_score?: number | null;
+  label?: string | null;
+};
+
+type ReportData = {
+  id: number;
+  chat_name: string;
+  analysis_results?: {
+    overall_score: number;
+    safe_percentage: number;
+    unsafe_percentage: number;
+    summary: string;
+  } | null;
+  messages: ReportMessage[];
+};
 
 export default function Results() {
   const { id } = useParams<{ id: string }>();
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
     const fetchReport = async () => {
+      if (id === 'guest') {
+        const guestReport = getGuestReport();
+        if (guestReport) {
+          setData(guestReport as ReportData);
+        } else {
+          setError('Guest report is unavailable. Run the guest analysis again.');
+        }
+        setLoading(false);
+        return;
+      }
       try {
         const response = await apiClient.get(`/api/analyze/report/${id}`);
         setData(response.data);
@@ -34,13 +65,13 @@ export default function Results() {
         setLoading(false);
       }
     };
-    fetchReport();
+    void fetchReport();
   }, [id]);
 
   const derived = useMemo(() => {
     if (!data) return null;
     const analysis = data.analysis_results;
-    const flaggedMessages = data.messages.filter((m: any) => (m.risk_score ?? 0) > 50);
+    const flaggedMessages = data.messages.filter((m) => (m.risk_score ?? 0) > 50);
     const highRisk = (analysis?.unsafe_percentage ?? 0) > 20;
     const pieData = [
       { name: 'Safe', value: analysis?.safe_percentage || 0, color: '#10b981' },
@@ -48,6 +79,37 @@ export default function Results() {
     ];
     return { analysis, flaggedMessages, highRisk, pieData };
   }, [data]);
+
+  const downloadReport = () => {
+    if (!data || !derived) return;
+    const { analysis, flaggedMessages } = derived;
+    const lines = [
+      'SafeChat AI Report',
+      `Chat: ${data.chat_name}`,
+      `Summary: ${analysis?.summary ?? 'No summary available.'}`,
+      `Overall score: ${(analysis?.overall_score ?? 0).toFixed(1)}`,
+      `Safe percentage: ${(analysis?.safe_percentage ?? 0).toFixed(1)}%`,
+      `Unsafe percentage: ${(analysis?.unsafe_percentage ?? 0).toFixed(1)}%`,
+      `Messages analyzed: ${data.messages.length}`,
+      `Flagged messages: ${flaggedMessages.length}`,
+      '',
+      'Flagged message details:',
+      ...flaggedMessages.map((msg, index) => {
+        const timestamp = msg.timestamp ? new Date(msg.timestamp).toLocaleString() : 'Unavailable';
+        return `${index + 1}. [${timestamp}] ${msg.sender}: ${msg.message} | Risk ${(msg.risk_score ?? 0).toFixed(1)} | ${msg.label ?? 'Unclassified'}`;
+      }),
+    ].join('\n');
+
+    const blob = new Blob([lines], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${(data.chat_name || 'safechat-report').replace(/[^a-z0-9-_]+/gi, '_')}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
 
   if (loading) {
     return (
@@ -63,14 +125,11 @@ export default function Results() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
         <div className="rounded-[28px] border border-rose-500/20 bg-rose-500/8 p-8 text-center shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
-          <p className="text-rose-300">{error}</p>
+          <p className="text-rose-300">{error || 'Report data is unavailable.'}</p>
           <div className="mt-4">
             <button
-              onClick={() => {
-                setLoading(true);
-                setError('');
-                setData(null);
-              }}
+              type="button"
+              onClick={() => window.location.reload()}
               className="rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:brightness-110"
             >
               Retry
@@ -93,6 +152,14 @@ export default function Results() {
           <ArrowLeft className="h-4 w-4" />
           Back to analyzer
         </Link>
+        <button
+          type="button"
+          onClick={downloadReport}
+          className="inline-flex items-center gap-2 rounded-full border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm text-cyan-300 transition hover:bg-cyan-500/15"
+        >
+          <Download className="h-4 w-4" />
+          Download safety report
+        </button>
       </div>
 
       <section className="overflow-hidden rounded-[28px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-6 shadow-[0_30px_120px_rgba(59,130,246,0.15)] md:p-8">
@@ -170,7 +237,7 @@ export default function Results() {
           </div>
 
           <div className="mt-5 space-y-3">
-            {flaggedMessages.slice(0, 24).map((msg: any, i: number) => (
+            {flaggedMessages.slice(0, 24).map((msg, i) => (
               <div key={i} className="rounded-[22px] border border-rose-500/18 bg-rose-500/[0.05] p-4">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                   <div>
@@ -184,7 +251,7 @@ export default function Results() {
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     <span className="rounded-full border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 font-medium text-rose-300">
-                      Risk {msg.risk_score.toFixed(1)}
+                      Risk {(msg.risk_score ?? 0).toFixed(1)}
                     </span>
                     {msg.label && (
                       <span className="rounded-full border border-white/8 bg-white/[0.04] px-3 py-1.5 font-medium text-slate-200">
@@ -234,19 +301,19 @@ export default function Results() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/6">
-                {data.messages.slice(0, 100).map((msg: any, i: number) => (
+                {data.messages.slice(0, 100).map((msg, i) => (
                   <tr key={i} className="align-top transition hover:bg-white/[0.025]">
                     <td className="px-4 py-3">
                       <div className="font-medium text-slate-200">{msg.sender}</div>
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-400">
-                      {msg.timestamp ? new Date(msg.timestamp).toLocaleString() : '—'}
+                      {msg.timestamp ? new Date(msg.timestamp).toLocaleString() : '-'}
                     </td>
                     <td className="max-w-[28rem] px-4 py-3 text-slate-100">
                       <div className="line-clamp-3 leading-6">{msg.message}</div>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex rounded-full px-3 py-1.5 text-xs font-medium ${((msg.risk_score ?? 0) > 50) ? 'border border-rose-500/20 bg-rose-500/10 text-rose-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
+                      <span className={`inline-flex rounded-full px-3 py-1.5 text-xs font-medium ${(msg.risk_score ?? 0) > 50 ? 'border border-rose-500/20 bg-rose-500/10 text-rose-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
                         {msg.label ?? 'Safe'}
                       </span>
                     </td>

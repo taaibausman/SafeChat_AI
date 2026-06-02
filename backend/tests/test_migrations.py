@@ -1,5 +1,6 @@
 import io
 import runpy
+import sys
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -49,6 +50,7 @@ class TestMigrations(unittest.TestCase):
             self.assertIn("20260530_001_whatsapp_live_schema", versions)
             self.assertIn("20260530_002_core_database_alignment", versions)
             self.assertIn("20260530_003_whatsapp_monitor_scope", versions)
+            self.assertIn("20260601_001_whatsapp_bridge_sessions", versions)
 
             result = conn.execute(
                 text(
@@ -78,7 +80,7 @@ class TestMigrations(unittest.TestCase):
 
         with self.engine.connect() as conn:
             result = conn.execute(text("SELECT COUNT(*) FROM schema_migrations"))
-            self.assertEqual(result.scalar(), 3)
+            self.assertEqual(result.scalar(), 4)
 
     def test_migrate_main_runs_metadata_and_migrations(self):
         with patch.object(migrate_script.Base.metadata, "create_all") as create_all_mock, patch.object(
@@ -91,11 +93,16 @@ class TestMigrations(unittest.TestCase):
         self.assertIn("Migrations applied successfully.", stdout_mock.getvalue())
 
     def test_migrate_cli_entrypoint(self):
-        with patch("backend.database.config.Base.metadata.create_all") as create_all_mock, patch(
-            "backend.database.migrations.run_migrations"
-        ) as run_migrations_mock, io.StringIO() as buffer, redirect_stdout(buffer):
-            runpy.run_module("backend.scripts.migrate", run_name="__main__")
-            output = buffer.getvalue()
+        cached_module = sys.modules.pop("backend.scripts.migrate", None)
+        try:
+            with patch("backend.database.config.Base.metadata.create_all") as create_all_mock, patch(
+                "backend.database.migrations.run_migrations"
+            ) as run_migrations_mock, io.StringIO() as buffer, redirect_stdout(buffer):
+                runpy.run_module("backend.scripts.migrate", run_name="__main__")
+                output = buffer.getvalue()
+        finally:
+            if cached_module is not None:
+                sys.modules["backend.scripts.migrate"] = cached_module
 
         create_all_mock.assert_called_once()
         run_migrations_mock.assert_called_once()

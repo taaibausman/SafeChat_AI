@@ -11,6 +11,14 @@ copy .env.example .env
 npm run dev
 ```
 
+For a term-project demo, keep the bridge in shared single-account mode:
+
+```env
+SAFECHAT_WHATSAPP_SINGLE_ACCOUNT_MODE=1
+SAFECHAT_WHATSAPP_DEMO_SESSION_KEY=safechat-demo
+SAFECHAT_WHATSAPP_AUTO_FORWARD_ALL=1
+```
+
 ## What it does
 
 - Opens a WhatsApp Web session with QR authentication.
@@ -18,6 +26,8 @@ npm run dev
 - Posts connection state and QR updates to FastAPI.
 - Forwards incoming WhatsApp messages to SafeChat for AI analysis.
 - Exposes a tiny local control server for bridge health and restart actions.
+- In single-account demo mode, reuses one shared WhatsApp session and can
+  forward messages even before monitor scope is configured.
 
 ## Endpoints expected in FastAPI
 

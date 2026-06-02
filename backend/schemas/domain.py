@@ -6,6 +6,8 @@ class ChatUploadResponse(BaseModel):
     chat_id: int
     message: str
 
+
+
 class DashboardRecentChat(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -23,12 +25,15 @@ class DashboardSummaryResponse(BaseModel):
     recent_chats: List[DashboardRecentChat]
 
 class WhatsAppStatusUpdate(BaseModel):
+    bridge_session_key: Optional[str] = None
     status: str
     reason: Optional[str] = None
     qr: Optional[str] = None
     connected_phone: Optional[str] = None
 
 class WhatsAppStatusResponse(BaseModel):
+    bridge_session_key: Optional[str] = None
+    single_account_mode: bool = False
     status: str
     reason: Optional[str] = None
     qr: Optional[str] = None
@@ -40,6 +45,7 @@ class WhatsAppStatusResponse(BaseModel):
     last_event_at: Optional[datetime] = None
 
 class IncomingWhatsAppMessage(BaseModel):
+    bridge_session_key: Optional[str] = None
     message_id: Optional[str] = None
     group_id: Optional[str] = None
     group_name: Optional[str] = None
@@ -307,6 +313,11 @@ class ChatDetailResponse(BaseModel):
     messages: List[MessageBase] = []
 
 
+class GuestChatUploadResponse(BaseModel):
+    message: str
+    report: ChatDetailResponse
+
+
 class LiveChatDetailResponse(BaseModel):
     id: int
     platform: str
@@ -393,7 +404,6 @@ class UserRegisterRequest(BaseModel):
     email: str
     password: str
     name: Optional[str] = None
-    role: Optional[str] = "user"
 
 
 class UserLoginRequest(BaseModel):
@@ -410,6 +420,27 @@ class UserResponse(BaseModel):
     is_active: bool = True
     name: Optional[str] = None
     created_at: datetime
+
+
+class UserListResponse(BaseModel):
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    users: List[UserResponse]
+
+
+class UserUpdateRequest(BaseModel):
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    name: Optional[str] = None
+
+
+class UserProfileUpdateRequest(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
 
 
 class AuthResponse(BaseModel):

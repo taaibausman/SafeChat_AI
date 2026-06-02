@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, CheckCircle2, FileText, MessageSquareText, Shield, Upload } from 'lucide-react';
-import { apiClient } from '../lib/api';
+import { AlertTriangle, CheckCircle2, Download, FileText, Shield, Upload } from 'lucide-react';
+import { apiClient, getStoredSession, storeGuestReport } from '../lib/api';
 
 export default function ExportAnalyzer() {
   const navigate = useNavigate();
@@ -31,11 +31,20 @@ export default function ExportAnalyzer() {
     formData.append('file', file);
 
     try {
-      const response = await apiClient.post(`/api/analyze/upload`, formData, {
+      const hasSession = !!getStoredSession();
+      const response = await apiClient.post(hasSession ? '/api/analyze/upload' : '/api/analyze/guest-upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 60000,
       });
-      setResults(response.data);
+      if (hasSession) {
+        setResults(response.data);
+      } else {
+        storeGuestReport(response.data.report);
+        setResults({
+          message: response.data.message,
+          chat_id: 'guest',
+        });
+      }
     } catch (err: any) {
       if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
         setError('Analysis is taking longer than expected. Wait for model warmup, then retry.');
@@ -49,25 +58,32 @@ export default function ExportAnalyzer() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <section className="overflow-hidden rounded-[28px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-6 shadow-[0_30px_120px_rgba(59,130,246,0.15)] md:p-8">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-5 shadow-[0_30px_120px_rgba(59,130,246,0.12)] md:p-6">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
           <div className="max-w-3xl">
             <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">ANALYZE CHAT</p>
-            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-5xl">WhatsApp export review</h1>
-            <p className="mt-4 text-sm leading-7 text-slate-400 md:text-base">
-              Upload a WhatsApp `.txt` export and generate a structured moderation report with risk scores, flagged messages, and summary insights.
+            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-[3rem]">WhatsApp export review</h1>
+            <p className="mt-3 text-sm leading-7 text-slate-400 md:text-base">
+              Upload a WhatsApp `.txt` export to generate a moderation report.
             </p>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3 lg:w-[29rem]">
+          <div className="grid gap-3 sm:grid-cols-3 lg:w-[21rem]">
             {[
-              ['Input', '.txt export'],
-              ['Output', 'Risk report'],
-              ['Mode', 'Offline scan'],
-            ].map(([label, value]) => (
+              { label: 'Input', value: '.txt export', icon: Download },
+              { label: 'Output', value: 'Risk report', icon: FileText },
+              { label: 'Mode', value: 'Offline', icon: Shield },
+            ].map(({ label, value, icon: Icon }) => (
               <div key={label} className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
-                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</p>
-                <p className="mt-2 text-sm font-medium text-white">{value}</p>
+                <div className="flex items-center gap-3">
+                  <div className="rounded-xl bg-cyan-500/10 p-2 text-cyan-300">
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="text-[11px] text-slate-500">{label}</p>
+                    <p className="mt-1 text-sm font-medium text-white">{value}</p>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
@@ -75,21 +91,18 @@ export default function ExportAnalyzer() {
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
           <div
-            className="cursor-pointer rounded-[24px] border-2 border-dashed border-white/10 bg-slate-950/55 p-8 text-center transition hover:border-cyan-500/35 hover:bg-slate-950/70 sm:p-12"
+            className="cursor-pointer rounded-[24px] border-2 border-dashed border-blue-500/40 bg-[linear-gradient(180deg,rgba(8,16,35,0.96),rgba(11,18,34,0.88))] p-8 text-center transition hover:border-cyan-500/45 hover:bg-slate-950/70 sm:p-12"
             onClick={() => document.getElementById('file-upload')?.click()}
           >
-            <div className="mx-auto inline-flex rounded-3xl border border-cyan-500/20 bg-cyan-500/10 p-4">
+            <div className="mx-auto inline-flex rounded-[22px] border border-cyan-500/20 bg-cyan-500/10 p-5">
               <Upload className="h-10 w-10 text-cyan-300" />
             </div>
             <h3 className="mt-6 text-2xl font-semibold text-white">Drop export or click to upload</h3>
-            <p className="mt-3 text-sm leading-7 text-slate-400">
-              Use the raw WhatsApp text export. The analyzer will extract messages, score them, and generate a linked report.
-            </p>
-            <div className="mt-5 inline-flex rounded-full border border-white/8 bg-white/[0.03] px-4 py-2 text-xs text-slate-300">
+            <p className="mt-3 text-sm text-slate-400">
               Supported format: `.txt`
-            </div>
+            </p>
             <input type="file" id="file-upload" className="hidden" accept=".txt" onChange={handleFileChange} />
           </div>
 
@@ -110,7 +123,7 @@ export default function ExportAnalyzer() {
                   disabled={isUploading}
                   className="inline-flex min-h-12 items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isUploading ? 'Analyzing export…' : 'Run analysis'}
+                  {isUploading ? 'Analyzing export...' : 'Run analysis'}
                 </button>
               </div>
             </div>
@@ -141,7 +154,7 @@ export default function ExportAnalyzer() {
                   <h4 className="text-lg font-semibold text-white">Analysis complete</h4>
                   <p className="mt-2 text-sm text-slate-300">{results.message}</p>
                   <div className="mt-4 rounded-2xl border border-white/8 bg-slate-950/55 p-4 font-mono text-sm text-emerald-300">
-                    Chat ID: {results.chat_id}
+                    {results.chat_id === 'guest' ? 'Guest analysis only' : `Chat ID: ${results.chat_id}`}
                   </div>
                   <button
                     onClick={() => navigate(`/results/${results.chat_id}`)}
@@ -155,37 +168,30 @@ export default function ExportAnalyzer() {
           )}
         </section>
 
-        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
-          <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">WORKFLOW</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">What happens after upload</h2>
+        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+          <h2 className="text-2xl font-semibold text-white">What happens after upload</h2>
           <div className="mt-6 space-y-4">
             {[
               {
-                icon: MessageSquareText,
-                title: 'Parse the export',
-                text: 'The system extracts timestamps, senders, and message content from the chat file.',
+                title: 'Parse export',
+                text: 'Extract messages and timestamps.',
               },
               {
-                icon: Shield,
-                title: 'Score harmful content',
-                text: 'Each message is evaluated for unsafe language patterns and aggregated into a report summary.',
+                title: 'Score content',
+                text: 'Detect risky or harmful language.',
               },
               {
-                icon: CheckCircle2,
-                title: 'Review the result',
-                text: 'Open the report page to inspect overall safety ratios, flagged messages, and recent conversation context.',
+                title: 'View report',
+                text: 'Review flagged messages and summary.',
               },
-            ].map(({ icon: Icon, title, text }, index) => (
-              <div key={title} className="flex gap-4 rounded-[22px] border border-white/8 bg-slate-950/55 p-4">
-                <div className="flex flex-col items-center">
-                  <div className="inline-flex rounded-2xl border border-white/8 bg-white/[0.04] p-3">
-                    <Icon className="h-5 w-5 text-cyan-300" />
-                  </div>
-                  {index < 2 && <div className="mt-3 h-full w-px bg-gradient-to-b from-cyan-500/35 to-transparent" />}
+            ].map(({ title, text }, index) => (
+              <div key={title} className="flex items-start gap-4 rounded-[20px] border border-white/8 bg-slate-950/55 p-4">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-500/25 bg-cyan-500/10 text-sm font-semibold text-cyan-300">
+                  {index + 1}
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-white">{title}</h3>
-                  <p className="mt-2 text-sm leading-7 text-slate-400">{text}</p>
+                  <h3 className="text-base font-semibold text-white">{title}</h3>
+                  <p className="mt-1 text-sm leading-6 text-slate-400">{text}</p>
                 </div>
               </div>
             ))}

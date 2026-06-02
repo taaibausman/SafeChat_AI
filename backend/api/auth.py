@@ -20,12 +20,11 @@ def register_user(payload: schemas.UserRegisterRequest, db: Session = Depends(ge
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already exists")
 
-    role = payload.role if payload.role in {"user", "admin"} else "user"
     user = models.User(
         username=payload.username,
         email=payload.email,
         password_hash=hash_password(payload.password),
-        role=role,
+        role="user",
         is_active=True,
         name=payload.name,
     )
