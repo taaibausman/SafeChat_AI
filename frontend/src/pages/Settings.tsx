@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   CalendarDays,
   ChevronRight,
@@ -43,10 +44,10 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+    <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
       <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">{eyebrow}</p>
       <h2 className="mt-2 text-2xl font-semibold text-white">{title}</h2>
-      <div className="mt-5">{children}</div>
+      <div className="mt-4">{children}</div>
     </section>
   );
 }
@@ -92,7 +93,7 @@ function PrivacyItem({
   interactive?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-4 rounded-[22px] border border-white/8 bg-slate-950/55 p-4">
+      <div className="flex items-center gap-4 rounded-[22px] border border-white/8 bg-slate-950/55 p-3">
       <div className="rounded-2xl bg-cyan-500/12 p-3 text-cyan-300">{icon}</div>
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-white">{title}</p>
@@ -104,6 +105,7 @@ function PrivacyItem({
 }
 
 export default function SettingsPage() {
+  const navigate = useNavigate();
   const [session, setSession] = useState<AuthSession | null>(() => getStoredSession());
   const [authMessage, setAuthMessage] = useState('');
   const [profileName, setProfileName] = useState('');
@@ -173,6 +175,7 @@ export default function SettingsPage() {
     syncSession(null);
     setUsers([]);
     setAuthMessage('Signed out.');
+    navigate('/login', { replace: true });
   };
 
   const saveProfile = async () => {
@@ -273,7 +276,7 @@ export default function SettingsPage() {
     if (!isPasswordModalOpen) return null;
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
-        <div className="w-full max-w-md rounded-[28px] border border-white/8 bg-slate-900 p-6 shadow-[0_30px_120px_rgba(15,23,42,0.5)]">
+        <div className="w-full max-w-md rounded-[28px] border border-white/8 bg-slate-900 p-5 shadow-[0_30px_120px_rgba(15,23,42,0.5)]">
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">SECURITY</p>
@@ -350,8 +353,8 @@ export default function SettingsPage() {
   };
 
   const renderUserSettings = () => (
-    <div className="grid gap-6 xl:grid-cols-[0.98fr_1fr]">
-      <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
+    <div className="grid gap-4 xl:grid-cols-[0.98fr_1fr]">
+      <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
         <div className="flex items-center gap-3">
           <div className="rounded-2xl bg-cyan-500/12 p-3 text-cyan-300">
             <UserCog className="h-5 w-5" />
@@ -409,7 +412,7 @@ export default function SettingsPage() {
         {authMessage && <p className="mt-4 text-sm text-emerald-300">{authMessage}</p>}
       </section>
 
-      <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
+      <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
         <div className="flex items-center gap-3">
           <div className="rounded-2xl bg-cyan-500/12 p-3 text-cyan-300">
             <ShieldCheck className="h-5 w-5" />
@@ -441,8 +444,8 @@ export default function SettingsPage() {
   );
 
   const renderAdminSettings = () => (
-    <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-      <div className="space-y-6">
+    <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+      <div className="space-y-4">
         <SectionCard eyebrow="ADMIN SESSION" title="Admin account controls">
           <div className="flex items-center gap-3">
             <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
@@ -597,9 +600,9 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
+    <div className="mx-auto max-w-7xl space-y-4 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
       {renderPasswordModal()}
-      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(10,18,34,0.98),rgba(8,14,26,0.96))] p-5 shadow-[0_30px_120px_rgba(34,211,238,0.08)]">
+      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(10,18,34,0.98),rgba(8,14,26,0.96))] p-4 shadow-[0_30px_120px_rgba(34,211,238,0.08)]">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
             <div className="rounded-2xl bg-cyan-500/14 p-3 text-cyan-300">

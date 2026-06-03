@@ -767,6 +767,57 @@ def get_bridge_health(
     )
 
 
+@router.get("/chat-directory", response_model=schemas.WhatsAppChatDirectoryResponse)
+def get_chat_directory(
+    search: str | None = Query(default=None),
+    limit: int = Query(default=40, ge=1, le=200),
+    current_user: models.User = Depends(get_current_user),
+):
+    session_key = _bridge_session_key_for_user(current_user)
+    reachable, payload, detail = _bridge_request(
+        "/directory",
+        query={
+            "session_key": session_key,
+            "search": (search or "").strip(),
+            "limit": str(limit),
+        },
+    )
+    if not reachable:
+        return schemas.WhatsAppChatDirectoryResponse(
+            reachable=False,
+            status="disconnected",
+            detail=detail,
+            total=0,
+            items=[],
+        )
+
+    payload = payload or {}
+    raw_items = payload.get("items") or []
+    items = [
+        schemas.WhatsAppChatDirectoryEntry(
+            chat_key=str(item.get("chat_key") or ""),
+            chat_type=str(item.get("chat_type") or "direct"),
+            display_name=str(item.get("display_name") or item.get("chat_key") or "Unknown chat"),
+            phone_number=item.get("phone_number"),
+            source=str(item.get("source") or "recent"),
+            recent_message_count=int(item.get("recent_message_count") or 0),
+            last_activity_at=datetime.fromisoformat(item["last_activity_at"])
+            if item.get("last_activity_at")
+            else None,
+            is_monitored=bool(item.get("is_monitored")),
+        )
+        for item in raw_items
+        if item.get("chat_key")
+    ]
+    return schemas.WhatsAppChatDirectoryResponse(
+        reachable=True,
+        status=payload.get("status"),
+        detail=payload.get("detail"),
+        total=int(payload.get("total") or len(items)),
+        items=items,
+    )
+
+
 @router.post("/bridge-restart", response_model=schemas.WhatsAppBridgeHealthResponse)
 def restart_bridge(
     current_user: models.User = Depends(get_current_user),
@@ -818,12 +869,13 @@ async def update_whatsapp_status(payload: schemas.WhatsAppStatusUpdate, db: Sess
         state = _get_or_create_bridge_state(db)
     state.status = payload.status
     state.reason = payload.reason
-    state.qr = payload.qr if payload.status != "connected" else None
+    if payload.status == "connected":
+        state.qr = None
+    elif payload.qr:
+        state.qr = payload.qr
     state.connected_phone = payload.connected_phone or state.connected_phone
     if payload.qr:
         state.qr_updated_at = datetime.now(timezone.utc)
-    if payload.status == "connected":
-        state.qr = None
     state.last_event_at = datetime.now(timezone.utc)
     state.updated_at = datetime.now(timezone.utc)
     db.commit()

@@ -73,8 +73,8 @@ export default function ReportsPage() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(10,18,34,0.98),rgba(8,14,26,0.96))] p-5 shadow-[0_30px_120px_rgba(34,211,238,0.08)]">
+    <div className="mx-auto max-w-7xl space-y-4 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
+      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(10,18,34,0.98),rgba(8,14,26,0.96))] p-4 shadow-[0_30px_120px_rgba(34,211,238,0.08)]">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
             <div className="rounded-2xl bg-cyan-500/14 p-3 text-cyan-300">
@@ -102,7 +102,7 @@ export default function ReportsPage() {
           </div>
         </div>
 
-        <div className="mt-6 grid gap-4 md:grid-cols-3">
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
           <StatCard label="Chats analyzed" value={summary?.total_chats ?? 0} tone="cyan" />
           <StatCard label="Flagged messages" value={summary?.flagged_messages ?? 0} tone="rose" />
           <StatCard label="Safe ratio" value={`${summary?.safe_ratio?.toFixed(1) ?? '100.0'}%`} tone="emerald" />
@@ -118,9 +118,9 @@ export default function ReportsPage() {
         </div>
       )}
 
-      <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] backdrop-blur md:p-6">
+      <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] backdrop-blur md:p-5">
         <h2 className="text-xl font-semibold text-white md:text-2xl">Recent reports</h2>
-        <div className="mt-5 space-y-3">
+        <div className="mt-4 max-h-[34rem] space-y-3 overflow-auto pr-1">
           {isLoading ? (
             <div className="rounded-[20px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-slate-400">
               Loading reports...
@@ -130,7 +130,7 @@ export default function ReportsPage() {
               <Link
                 key={chat.id}
                 to={`/results/${chat.id}`}
-                className="flex flex-col gap-4 rounded-[20px] border border-white/6 bg-slate-950/70 px-5 py-4 transition hover:border-cyan-500/30 sm:flex-row sm:items-center sm:justify-between"
+                className="flex flex-col gap-3 rounded-[20px] border border-white/6 bg-slate-950/70 px-4 py-3 transition hover:border-cyan-500/30 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div>
                   <p className="font-medium text-white">{chat.chat_name}</p>

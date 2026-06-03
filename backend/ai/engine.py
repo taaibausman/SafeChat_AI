@@ -1,9 +1,12 @@
 import os
 import threading
+import re
 import torch
+from backend.ai.rule_loader import load_compiled_moderation_rules
 
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+RULES = load_compiled_moderation_rules()
 
 
 def _env_flag(name: str) -> bool:
@@ -53,6 +56,98 @@ class AIEngine:
     def _is_unsafe_binary_label(self, label: str | None) -> bool:
         normalized = str(label or "").strip().lower()
         return normalized in {"unsafe", "label_1", "1", "true", "toxic", "harmful"}
+
+    def _tokenize_text(self, text: str) -> list[str]:
+        return re.findall(r"[a-zA-Z']+", str(text or "").lower())
+
+    def _contains_threat_or_abuse_terms(self, text: str) -> bool:
+        text_lower = str(text or "").lower()
+        phrase_markers = (
+            RULES.scam_phrases
+            + RULES.threat_phrases
+            + RULES.harassment_phrases
+            + RULES.self_harm_phrases
+            + RULES.sexual_harassment_phrases
+            + RULES.blackmail_phrases
+            + RULES.distress_phrases
+        )
+        if any(marker in text_lower for marker in phrase_markers):
+            return True
+
+        token_markers = RULES.abuse_tokens | RULES.threat_tokens | RULES.sexual_tokens
+        return any(token in token_markers for token in self._tokenize_text(text_lower))
+
+    def _looks_like_benign_short_message(self, text: str) -> bool:
+        tokens = self._tokenize_text(text)
+        if not tokens or len(tokens) > 4:
+            return False
+        if self._contains_threat_or_abuse_terms(text):
+            return False
+
+        safe_hits = sum(1 for token in tokens if token in RULES.safe_tokens)
+        short_text = len(" ".join(tokens)) <= 24
+        return short_text and safe_hits >= 1
+
+    def _rule_based_signal(self, text: str) -> tuple[float, str | None]:
+        text_lower = str(text or "").lower().strip()
+        tokens = set(self._tokenize_text(text_lower))
+        safe_context_hits = sum(1 for phrase in RULES.safe_context_phrases if phrase in text_lower)
+        negation_context_hits = sum(1 for phrase in RULES.negation_context_phrases if phrase in text_lower)
+        safe_context_hits += len(tokens & RULES.safe_context_tokens) // 2
+        context_soften = bool(negation_context_hits or safe_context_hits >= 2)
+
+        if any(phrase in text_lower for phrase in RULES.scam_phrases):
+            if context_soften:
+                return 0.38, "Safe"
+            return 0.82, "Scam"
+        if any(phrase in text_lower for phrase in RULES.blackmail_phrases):
+            if context_soften:
+                return 0.45, "Safe"
+            return 0.9, "Threat"
+        if any(phrase in text_lower for phrase in RULES.sexual_harassment_phrases):
+            if context_soften:
+                return 0.42, "Safe"
+            return 0.86, "Unsafe"
+        if any(phrase in text_lower for phrase in RULES.distress_phrases):
+            return 0.78, "Distress"
+        if any(phrase in text_lower for phrase in RULES.self_harm_phrases):
+            if context_soften:
+                return 0.45, "Safe"
+            return 0.93, "Threat"
+        if any(phrase in text_lower for phrase in RULES.threat_phrases):
+            if context_soften:
+                return 0.44, "Safe"
+            return 0.92, "Threat"
+        if any(phrase in text_lower for phrase in RULES.harassment_phrases):
+            base_score = 0.72
+            if context_soften:
+                base_score = 0.42
+            return base_score, "Unsafe" if base_score >= 0.55 else "Safe"
+
+        abuse_hits = len(tokens & RULES.abuse_tokens)
+        threat_hits = len(tokens & RULES.threat_tokens)
+        sexual_hits = len(tokens & RULES.sexual_tokens)
+
+        if threat_hits >= 2:
+            if context_soften:
+                return 0.42, "Safe"
+            return 0.88, "Threat"
+        if sexual_hits >= 2:
+            if context_soften:
+                return 0.4, "Safe"
+            return 0.76, "Unsafe"
+        if abuse_hits >= 2:
+            score = 0.7
+            if context_soften:
+                score = 0.4
+            return score, "Unsafe" if score >= 0.55 else "Safe"
+        if abuse_hits == 1 and len(tokens) <= 5:
+            score = 0.6
+            if context_soften:
+                score = 0.34
+            return score, "Unsafe" if score >= 0.55 else "Safe"
+
+        return 0.0, None
 
     def action_for_score(self, score: float | int | None) -> str:
         normalized = float(score or 0.0)
@@ -172,15 +267,15 @@ class AIEngine:
         max_tox = max(tox_results.values()) if tox_results else 0
         
         # 3. Rules Engine
-        rule_score = 0
-        rule_label = None
-        text_lower = text.lower()
-        if any(word in text_lower for word in ["send money", "gift card", "crypto", "password"]):
-            rule_score = 0.8
-            rule_label = "Scam"
-        elif any(word in text_lower for word in ["kill", "destroy", "beat you"]):
-            rule_score = 0.9
-            rule_label = "Threat"
+        rule_score, rule_label = self._rule_based_signal(text)
+
+        if (
+            binary_score >= 0.8
+            and max_tox < 0.35
+            and rule_score == 0
+            and self._looks_like_benign_short_message(text)
+        ):
+            binary_score = min(binary_score, 0.24)
 
         # 4. Final Risk Calculation
         # Aggregate scores (simplified)

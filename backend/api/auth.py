@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import backend.models.domain as models
@@ -12,21 +13,26 @@ router = APIRouter()
 
 @router.post("/register", response_model=schemas.AuthResponse)
 def register_user(payload: schemas.UserRegisterRequest, db: Session = Depends(get_db)):
+    normalized_username = payload.username.strip()
+    normalized_email = payload.email.strip().lower()
     existing = (
         db.query(models.User)
-        .filter((models.User.email == payload.email) | (models.User.username == payload.username))
+        .filter(
+            (func.lower(models.User.email) == normalized_email)
+            | (func.lower(models.User.username) == normalized_username.lower())
+        )
         .first()
     )
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already exists")
 
     user = models.User(
-        username=payload.username,
-        email=payload.email,
+        username=normalized_username,
+        email=normalized_email,
         password_hash=hash_password(payload.password),
         role="user",
         is_active=True,
-        name=payload.name,
+        name=payload.name.strip() if payload.name else None,
     )
     db.add(user)
     db.commit()
@@ -41,9 +47,13 @@ def register_user(payload: schemas.UserRegisterRequest, db: Session = Depends(ge
 
 @router.post("/login", response_model=schemas.AuthResponse)
 def login_user(payload: schemas.UserLoginRequest, db: Session = Depends(get_db)):
+    credential = payload.email_or_username.strip()
     user = (
         db.query(models.User)
-        .filter((models.User.email == payload.email_or_username) | (models.User.username == payload.email_or_username))
+        .filter(
+            (func.lower(models.User.email) == credential.lower())
+            | (func.lower(models.User.username) == credential.lower())
+        )
         .first()
     )
     if user is None or not verify_password(payload.password, user.password_hash):

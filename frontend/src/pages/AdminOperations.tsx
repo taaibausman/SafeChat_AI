@@ -80,10 +80,10 @@ function StatusCard({
   };
 
   return (
-    <div className={`rounded-[24px] border bg-gradient-to-br p-5 ${toneMap[tone]}`}>
+    <div className={`rounded-[24px] border bg-gradient-to-br p-4 ${toneMap[tone]}`}>
       <p className="text-xs uppercase tracking-[0.18em] text-slate-400">{label}</p>
-      <p className="mt-3 text-3xl font-semibold text-white">{value}</p>
-      <p className="mt-2 text-sm text-slate-300">{note}</p>
+      <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
+      <p className="mt-1 text-sm text-slate-300">{note}</p>
     </div>
   );
 }
@@ -100,7 +100,7 @@ function SimplePanel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+    <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
       <div className="flex items-center gap-3">
         <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">{icon}</div>
         <div>
@@ -108,7 +108,7 @@ function SimplePanel({
           <h2 className="mt-1 text-2xl font-semibold text-white">{title}</h2>
         </div>
       </div>
-      <div className="mt-5">{children}</div>
+      <div className="mt-4">{children}</div>
     </section>
   );
 }
@@ -185,8 +185,8 @@ export default function AdminOperations() {
   }, [healthSummary]);
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(10,18,34,0.98),rgba(8,14,26,0.96))] p-5 shadow-[0_30px_120px_rgba(34,211,238,0.08)]">
+    <div className="mx-auto max-w-7xl space-y-4 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
+      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(10,18,34,0.98),rgba(8,14,26,0.96))] p-4 shadow-[0_30px_120px_rgba(34,211,238,0.08)]">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
             <div className="rounded-2xl bg-cyan-500/14 p-3 text-cyan-300">
@@ -210,7 +210,7 @@ export default function AdminOperations() {
           </button>
         </div>
 
-        <div className="mt-6 grid gap-4 md:grid-cols-4">
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
           <StatusCard label="Overall" value={primaryStatus.value} note={primaryStatus.note} tone={primaryStatus.tone} />
           <StatusCard
             label="Bridge"
@@ -243,7 +243,7 @@ export default function AdminOperations() {
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-3">
+      <div className="grid gap-4 xl:grid-cols-3">
         <SimplePanel icon={<Server className="h-5 w-5 text-cyan-300" />} eyebrow="Bridge" title="WhatsApp bridge">
           <div className="space-y-3 text-sm text-slate-300">
             <div className="rounded-[20px] border border-white/8 bg-slate-950/55 p-4">

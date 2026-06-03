@@ -1,5 +1,8 @@
+import os
 import warnings
 import pytest
+
+os.environ["DATABASE_URL"] = "sqlite:///./safechat-test.db"
 
 warnings.filterwarnings(
     "ignore",
@@ -26,6 +29,7 @@ from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 
 client = TestClient(app)
+TEST_DATABASE_PATH = "safechat-test.db"
 
 
 def setup_module(module):
@@ -33,6 +37,12 @@ def setup_module(module):
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     run_migrations(engine)
+
+
+def teardown_module(module):
+    engine.dispose()
+    if os.path.exists(TEST_DATABASE_PATH):
+        os.remove(TEST_DATABASE_PATH)
 
 
 def register_user(username: str, email: str, password: str, role: str = "user"):
@@ -211,6 +221,22 @@ def test_image_upload():
         db.close()
 
 
+def test_login_is_case_insensitive_for_email():
+    register_user("case-user", "Case.User@example.com", "secret123")
+
+    resp = client.post(
+        "/api/auth/login",
+        json={
+            "email_or_username": "case.user@EXAMPLE.com",
+            "password": "secret123",
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["user"]["email"] == "case.user@example.com"
+
+
 def test_image_ocr_normalization():
     normalized = image_analyzer._normalize_ocr_text(
         "   9:46 iG) tise €< Z_ Zaneeha \n\n On May 24, 2026 \u2014 Forwarded \n\n 4:06 PM View channel - Kahan ho \n @@@ \n"
@@ -235,6 +261,25 @@ def test_segment_ocr_text_into_messages():
     assert "Kahan ho" in messages
     assert "Jldi btao wrna" in messages
     assert "You bixtth" in messages
+
+
+def test_segment_ocr_text_filters_low_quality_noise():
+    parsed = image_analyzer._segment_ocr_text_into_messages(
+        "1G) atl!\n"
+        "and don't miss this opportunity.\n"
+        "A al i) aad ee me ee oe ee ae oe Kahan ho\n"
+        "taunt aren wy a SoORReeOhRees = & oak CI Sayer, 208 Jidi btao wrna...\n"
+        "Kesi ho ui\n"
+        "me 2c biI***h gas py cn Ce a"
+    )
+
+    messages = [item["message"] for item in parsed]
+    assert "and don't miss this opportunity." not in messages
+    assert all("1G) atl!" not in message for message in messages)
+    assert all("A al i) aad ee me ee oe ee ae oe" not in message for message in messages)
+    assert any("Kahan ho" in message for message in messages)
+    assert any("Jidi btao wrna" in message for message in messages)
+    assert any("Kesi ho ui" in message for message in messages)
 
 
 def test_easyocr_line_filter_removes_ui_chrome():
@@ -492,10 +537,49 @@ def test_whatsapp_chat_and_bridge_routes(monkeypatch):
     registered = register_user("bridge-routes", "bridge-routes@example.com", "secret123")
     token = registered["access_token"]
 
+    def fake_bridge_request(path, method="GET", query=None):
+        if path == "/directory":
+            return (
+                True,
+                {
+                    "status": "connected",
+                    "detail": "Directory ready",
+                    "total": 2,
+                    "items": [
+                        {
+                            "chat_key": "family-group",
+                            "chat_type": "group",
+                            "display_name": "Family Group",
+                            "phone_number": None,
+                            "source": "group",
+                            "recent_message_count": 12,
+                            "last_activity_at": "2026-06-02T12:30:00+00:00",
+                            "is_monitored": True,
+                        },
+                        {
+                            "chat_key": "923001112222",
+                            "chat_type": "direct",
+                            "display_name": "Ayesha",
+                            "phone_number": "923001112222",
+                            "source": "recent",
+                            "recent_message_count": 4,
+                            "last_activity_at": "2026-06-02T11:15:00+00:00",
+                            "is_monitored": False,
+                        },
+                    ],
+                },
+                None,
+            )
+        return (
+            True,
+            {"status": "connected", "detail": f"{method} {path}", "session_key": (query or {}).get("session_key")},
+            None,
+        )
+
     monkeypatch.setattr(
         whatsapp_api,
         "_bridge_request",
-        lambda path, method="GET", query=None: (True, {"status": "connected", "detail": f"{method} {path}", "session_key": (query or {}).get("session_key")}, None),
+        fake_bridge_request,
     )
 
     health_resp = client.get("/api/whatsapp/bridge-health", headers=auth_headers(token))
@@ -508,6 +592,15 @@ def test_whatsapp_chat_and_bridge_routes(monkeypatch):
     assert restart_resp.status_code == 200
     restart_data = restart_resp.json()
     assert restart_data["reachable"] is True
+
+    directory_resp = client.get("/api/whatsapp/chat-directory?search=ay&limit=10", headers=auth_headers(token))
+    assert directory_resp.status_code == 200
+    directory_data = directory_resp.json()
+    assert directory_data["reachable"] is True
+    assert directory_data["status"] == "connected"
+    assert directory_data["total"] == 2
+    assert len(directory_data["items"]) == 2
+    assert {item["chat_type"] for item in directory_data["items"]} == {"group", "direct"}
 
     events_resp = client.get("/api/whatsapp/bridge-events")
     assert events_resp.status_code == 200
@@ -636,6 +729,43 @@ def test_whatsapp_qr_status_persistence():
     snapshot_summary = snapshot_summary_resp.json()
     assert snapshot_summary["total_snapshots"] >= 1
     assert snapshot_summary["by_status"].get("qr_required", 0) >= 1
+
+
+def test_whatsapp_qr_persists_through_connecting_without_new_qr():
+    registered = register_user("bridge-qr-connecting", "bridge-qr-connecting@example.com", "secret123")
+    token = registered["access_token"]
+
+    first_resp = client.post(
+        "/api/whatsapp/status",
+        json={
+            "bridge_session_key": bridge_session_key(registered),
+            "status": "qr_required",
+            "reason": "Scan required",
+            "qr": "qr-token-connecting",
+        },
+    )
+    assert first_resp.status_code == 200
+    assert first_resp.json()["qr"] == "qr-token-connecting"
+
+    second_resp = client.post(
+        "/api/whatsapp/status",
+        json={
+            "bridge_session_key": bridge_session_key(registered),
+            "status": "connecting",
+            "reason": "Opening WhatsApp session.",
+            "qr": None,
+        },
+    )
+    assert second_resp.status_code == 200
+    second_data = second_resp.json()
+    assert second_data["status"] == "connecting"
+    assert second_data["qr"] == "qr-token-connecting"
+
+    qr_resp = client.get("/api/whatsapp/qr", headers=auth_headers(token))
+    assert qr_resp.status_code == 200
+    qr_data = qr_resp.json()
+    assert qr_data["status"] == "connecting"
+    assert qr_data["qr"] == "qr-token-connecting"
 
 
 def test_whatsapp_bridge_event_retention(monkeypatch):

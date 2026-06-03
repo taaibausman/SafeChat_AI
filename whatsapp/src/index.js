@@ -14,6 +14,7 @@ import { normalizeIncomingMessage } from "./message-normalizer.js";
 
 const sessions = new Map();
 let socketServer = null;
+const DIRECTORY_CACHE_REFRESH_MS = 60000;
 
 function emitBridgeEvent(type, payload) {
   socketServer?.emit(type, payload);
@@ -48,6 +49,12 @@ function getSession(sessionKey) {
         contacts: [],
         fetchedAt: 0,
       },
+      directoryCache: {
+        contacts: new Map(),
+        chats: new Map(),
+        groups: new Map(),
+        refreshedAt: 0,
+      },
     });
   }
   return sessions.get(normalized);
@@ -59,6 +66,213 @@ function currentBridgeSnapshot(session) {
     session_key: session.sessionKey,
     monitored_contacts: session.monitoredContactsCache.contacts.length,
     socket_transport: "socket.io",
+  };
+}
+
+function cleanJid(value) {
+  return String(value || "").split("@")[0].split(":")[0];
+}
+
+function normalizeActivityTimestamp(value) {
+  const numeric = Number(value || 0);
+  if (!numeric) {
+    return null;
+  }
+  return numeric > 1e12 ? numeric : numeric * 1000;
+}
+
+function directPhoneNumber(value) {
+  const normalized = cleanJid(value);
+  return /^\d+$/.test(normalized) ? normalized : null;
+}
+
+function upsertDirectoryContact(session, contact) {
+  const key = cleanJid(contact?.id || contact?.jid || contact?.lid);
+  if (!key) {
+    return;
+  }
+  const current = session.directoryCache.contacts.get(key) || {};
+  session.directoryCache.contacts.set(key, {
+    ...current,
+    chat_key: key,
+    display_name: contact?.name || contact?.notify || contact?.verifiedName || current.display_name || key,
+    phone_number: directPhoneNumber(contact?.id || contact?.jid) || current.phone_number || null,
+    source: current.source || "contact",
+  });
+}
+
+function upsertDirectoryChat(session, chat) {
+  const key = cleanJid(chat?.id || chat?.jid || chat?.conversationTimestamp);
+  if (!key) {
+    return;
+  }
+  const isGroup = String(chat?.id || chat?.jid || "").endsWith("@g.us");
+  const current = session.directoryCache.chats.get(key) || {};
+  session.directoryCache.chats.set(key, {
+    ...current,
+    chat_key: key,
+    chat_type: isGroup ? "group" : "direct",
+    display_name: chat?.name || chat?.conversationName || current.display_name || key,
+    phone_number: isGroup ? null : (directPhoneNumber(chat?.id || chat?.jid) || current.phone_number || null),
+    source: current.source || "recent",
+    last_activity_at:
+      normalizeActivityTimestamp(chat?.conversationTimestamp || chat?.lastMessageRecvTimestamp) || current.last_activity_at || null,
+    recent_message_count: current.recent_message_count || 0,
+  });
+}
+
+function upsertDirectoryGroup(session, groupMetadata) {
+  const key = cleanJid(groupMetadata?.id);
+  if (!key) {
+    return;
+  }
+  const current = session.directoryCache.groups.get(key) || {};
+  session.directoryCache.groups.set(key, {
+    ...current,
+    chat_key: key,
+    chat_type: "group",
+    display_name: groupMetadata?.subject || current.display_name || key,
+    phone_number: null,
+    source: "group",
+    last_activity_at:
+      normalizeActivityTimestamp(groupMetadata?.creation) || current.last_activity_at || null,
+    recent_message_count: current.recent_message_count || 0,
+  });
+}
+
+function noteMessageActivity(session, message) {
+  const key = cleanJid(message?.group_id);
+  if (!key) {
+    return;
+  }
+  const current = session.directoryCache.chats.get(key) || {
+    chat_key: key,
+    chat_type: message?.chat_type || "direct",
+    display_name: message?.group_name || message?.sender_name || key,
+    phone_number: message?.chat_type === "direct" ? directPhoneNumber(key) : null,
+    source: "recent",
+    recent_message_count: 0,
+    last_activity_at: null,
+  };
+  current.display_name =
+    message?.chat_type === "group"
+      ? message?.group_name || current.display_name || key
+      : message?.sender_name || message?.group_name || current.display_name || key;
+  current.chat_type = message?.chat_type || current.chat_type || "direct";
+  current.phone_number =
+    current.chat_type === "direct" ? directPhoneNumber(message?.sender || key) || current.phone_number || null : null;
+  current.source = current.source || "recent";
+  current.recent_message_count = Number(current.recent_message_count || 0) + 1;
+  current.last_activity_at = normalizeActivityTimestamp(message?.timestamp) || Date.now();
+  session.directoryCache.chats.set(key, current);
+
+  if (current.chat_type === "direct") {
+    upsertDirectoryContact(session, {
+      id: message?.sender,
+      name: message?.sender_name,
+      notify: message?.sender_name,
+    });
+  }
+}
+
+async function refreshChatDirectory(sessionKey, force = false) {
+  const resolvedSessionKey = resolveSessionKey(sessionKey);
+  const session = getSession(resolvedSessionKey);
+  if (!session?.socket) {
+    return;
+  }
+  const age = Date.now() - Number(session.directoryCache.refreshedAt || 0);
+  if (!force && age < DIRECTORY_CACHE_REFRESH_MS) {
+    return;
+  }
+  try {
+    const groups = await session.socket.groupFetchAllParticipating();
+    for (const groupMetadata of Object.values(groups || {})) {
+      upsertDirectoryGroup(session, groupMetadata);
+    }
+    session.directoryCache.refreshedAt = Date.now();
+  } catch (error) {
+    console.warn("Could not refresh WhatsApp chat directory:", error.message);
+  }
+}
+
+function buildDirectoryResponse(session, search = "", limit = 40) {
+  const monitoredKeys = new Set(
+    (session.monitoredContactsCache.contacts || []).map((contact) => `${contact.chat_type || "direct"}:${normalizeKey(contact.chat_key)}`)
+  );
+  const merged = new Map();
+
+  for (const entry of session.directoryCache.contacts.values()) {
+    merged.set(`direct:${entry.chat_key}`, {
+      chat_key: entry.chat_key,
+      chat_type: "direct",
+      display_name: entry.display_name || entry.chat_key,
+      phone_number: entry.phone_number || null,
+      source: entry.source || "contact",
+      recent_message_count: 0,
+      last_activity_at: entry.last_activity_at || null,
+    });
+  }
+  for (const entry of session.directoryCache.chats.values()) {
+    const cacheKey = `${entry.chat_type || "direct"}:${entry.chat_key}`;
+    const current = merged.get(cacheKey) || {};
+    merged.set(cacheKey, {
+      ...current,
+      chat_key: entry.chat_key,
+      chat_type: entry.chat_type || current.chat_type || "direct",
+      display_name: entry.display_name || current.display_name || entry.chat_key,
+      phone_number: entry.phone_number || current.phone_number || null,
+      source: entry.source || current.source || "recent",
+      recent_message_count: Math.max(Number(current.recent_message_count || 0), Number(entry.recent_message_count || 0)),
+      last_activity_at: entry.last_activity_at || current.last_activity_at || null,
+    });
+  }
+  for (const entry of session.directoryCache.groups.values()) {
+    const cacheKey = `group:${entry.chat_key}`;
+    const current = merged.get(cacheKey) || {};
+    merged.set(cacheKey, {
+      ...current,
+      chat_key: entry.chat_key,
+      chat_type: "group",
+      display_name: entry.display_name || current.display_name || entry.chat_key,
+      phone_number: null,
+      source: "group",
+      recent_message_count: Math.max(Number(current.recent_message_count || 0), Number(entry.recent_message_count || 0)),
+      last_activity_at: current.last_activity_at || entry.last_activity_at || null,
+    });
+  }
+
+  const query = String(search || "").trim().toLowerCase();
+  const items = Array.from(merged.values())
+    .filter((entry) => {
+      if (!query) {
+        return true;
+      }
+      return [entry.display_name, entry.chat_key, entry.phone_number, entry.source]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    })
+    .map((entry) => ({
+      ...entry,
+      is_monitored: monitoredKeys.has(`${entry.chat_type || "direct"}:${normalizeKey(entry.chat_key)}`),
+      last_activity_at: entry.last_activity_at ? new Date(entry.last_activity_at).toISOString() : null,
+    }))
+    .sort((a, b) => {
+      const countDiff = Number(b.recent_message_count || 0) - Number(a.recent_message_count || 0);
+      if (countDiff !== 0) {
+        return countDiff;
+      }
+      const timeDiff =
+        new Date(b.last_activity_at || 0).getTime() - new Date(a.last_activity_at || 0).getTime();
+      if (timeDiff !== 0) {
+        return timeDiff;
+      }
+      return String(a.display_name || "").localeCompare(String(b.display_name || ""));
+    });
+
+  return {
+    total: items.length,
+    items: items.slice(0, limit),
   };
 }
 
@@ -272,6 +486,28 @@ async function startWhatsApp(sessionKey) {
 
   session.socket = sock;
   sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("messaging-history.set", ({ chats = [], contacts = [] }) => {
+    contacts.forEach((contact) => upsertDirectoryContact(session, contact));
+    chats.forEach((chat) => upsertDirectoryChat(session, chat));
+  });
+  sock.ev.on("contacts.upsert", (contacts = []) => {
+    contacts.forEach((contact) => upsertDirectoryContact(session, contact));
+  });
+  sock.ev.on("contacts.update", (contacts = []) => {
+    contacts.forEach((contact) => upsertDirectoryContact(session, contact));
+  });
+  sock.ev.on("chats.upsert", (chats = []) => {
+    chats.forEach((chat) => upsertDirectoryChat(session, chat));
+  });
+  sock.ev.on("chats.update", (chats = []) => {
+    chats.forEach((chat) => upsertDirectoryChat(session, chat));
+  });
+  sock.ev.on("groups.upsert", (groups = []) => {
+    groups.forEach((groupMetadata) => upsertDirectoryGroup(session, groupMetadata));
+  });
+  sock.ev.on("groups.update", (groups = []) => {
+    groups.forEach((groupMetadata) => upsertDirectoryGroup(session, groupMetadata));
+  });
 
   sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
     if (qr) {
@@ -287,6 +523,7 @@ async function startWhatsApp(sessionKey) {
     if (connection === "open") {
       console.log(`WhatsApp connection established for ${resolvedSessionKey}.`);
       session.reconnectDelayMs = 3000;
+      void refreshChatDirectory(resolvedSessionKey, true);
       postStatus(resolvedSessionKey, "connected", "Bridge connected.", null, sock.user?.id || null);
     }
 
@@ -323,6 +560,7 @@ async function startWhatsApp(sessionKey) {
       if (!normalized) {
         continue;
       }
+      noteMessageActivity(session, normalized);
 
       const forward = await shouldForwardMessage(sessionKey, normalized);
       if (!forward) {
@@ -382,6 +620,30 @@ function startControlServer() {
       await restartBridge(sessionKey);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, status: "restarting", session_key: sessionKey }));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/directory") {
+      if (!sessionKey) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "session_key is required" }));
+        return;
+      }
+      const session = getSession(sessionKey);
+      await refreshChatDirectory(sessionKey, false);
+      const limit = Number(url.searchParams.get("limit") || 40);
+      const search = url.searchParams.get("search") || "";
+      const directory = buildDirectoryResponse(session, search, Number.isFinite(limit) ? limit : 40);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          session_key: sessionKey,
+          status: session.bridgeState.status,
+          detail: session.bridgeState.detail,
+          ...directory,
+        })
+      );
       return;
     }
 

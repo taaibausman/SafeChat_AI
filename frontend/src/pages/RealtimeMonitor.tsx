@@ -58,6 +58,7 @@ type LiveChatSummary = {
   is_live: boolean;
   message_count: number;
   flagged_messages: number;
+  open_alert_count: number;
   unsafe_percentage: number;
   last_message_at?: string | null;
   latest_message_preview?: string | null;
@@ -108,6 +109,17 @@ type MonitoredContact = {
   chat_type: string;
   is_active: boolean;
   created_at?: string | null;
+};
+
+type ChatDirectoryItem = {
+  chat_key: string;
+  chat_type: string;
+  display_name: string;
+  phone_number?: string | null;
+  source: string;
+  recent_message_count: number;
+  last_activity_at?: string | null;
+  is_monitored: boolean;
 };
 
 function formatDateTime(value?: string | null) {
@@ -192,10 +204,10 @@ function SimpleStat({
   hint: string;
 }) {
   return (
-    <div className="rounded-[22px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.3)]">
+    <div className="rounded-[22px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_20px_70px_rgba(15,23,42,0.3)]">
       <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</p>
-      <p className="mt-3 text-2xl font-semibold text-white">{value}</p>
-      <p className="mt-2 text-xs text-slate-400">{hint}</p>
+      <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
+      <p className="mt-1 text-xs text-slate-400">{hint}</p>
     </div>
   );
 }
@@ -210,16 +222,16 @@ export default function RealtimeMonitor() {
   const [chats, setChats] = useState<LiveChatSummary[]>([]);
   const [alerts, setAlerts] = useState<LiveAlert[]>([]);
   const [monitoredContacts, setMonitoredContacts] = useState<MonitoredContact[]>([]);
+  const [directoryItems, setDirectoryItems] = useState<ChatDirectoryItem[]>([]);
   const [bridgeHealth, setBridgeHealth] = useState<BridgeHealth | null>(null);
   const [healthSummary, setHealthSummary] = useState<BackendHealthSummary | null>(null);
   const [selectedChatId, setSelectedChatId] = useState<number | null>(null);
   const [chatSearch, setChatSearch] = useState('');
+  const [directorySearch, setDirectorySearch] = useState('');
   const [flaggedOnly, setFlaggedOnly] = useState(false);
-  const [monitorName, setMonitorName] = useState('');
-  const [monitorKey, setMonitorKey] = useState('');
-  const [monitorType, setMonitorType] = useState<'direct' | 'group'>('direct');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [isDirectoryLoading, setIsDirectoryLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
   const [isSavingMonitor, setIsSavingMonitor] = useState(false);
@@ -238,8 +250,11 @@ export default function RealtimeMonitor() {
     } else {
       setIsLoading(true);
     }
+    if (!showSpinner || directoryItems.length === 0) {
+      setIsDirectoryLoading(true);
+    }
 
-    const [statusResult, feedResult, chatResult, healthResult, opsResult, alertResult, monitoredResult] = await Promise.allSettled([
+    const [statusResult, feedResult, chatResult, healthResult, opsResult, alertResult, monitoredResult, directoryResult] = await Promise.allSettled([
       apiClient.get('/api/whatsapp/status'),
       apiClient.get('/api/whatsapp/live-feed', {
         params: {
@@ -263,6 +278,12 @@ export default function RealtimeMonitor() {
         },
       }),
       apiClient.get('/api/whatsapp/monitored-contacts'),
+      apiClient.get('/api/whatsapp/chat-directory', {
+        params: {
+          search: directorySearch || undefined,
+          limit: 100,
+        },
+      }),
     ]);
 
     const authFailed = [
@@ -273,6 +294,7 @@ export default function RealtimeMonitor() {
       opsResult,
       alertResult,
       monitoredResult,
+      directoryResult,
     ].some(isUnauthorizedResult);
 
     if (authFailed) {
@@ -281,11 +303,13 @@ export default function RealtimeMonitor() {
       setChats([]);
       setAlerts([]);
       setMonitoredContacts([]);
+      setDirectoryItems([]);
       setBridgeHealth(null);
       setHealthSummary(null);
       setError('Your session expired. Please log in again.');
       setIsLoading(false);
       setIsRefreshing(false);
+      setIsDirectoryLoading(false);
       storeSession(null);
       navigate('/login', { replace: true });
       return;
@@ -340,10 +364,17 @@ export default function RealtimeMonitor() {
       nextErrors.push('Monitor list could not be loaded.');
     }
 
+    if (directoryResult.status === 'fulfilled') {
+      setDirectoryItems(directoryResult.value.data.items ?? []);
+    } else {
+      nextErrors.push('Connected WhatsApp chats could not be loaded.');
+    }
+
     setError(nextErrors.join(' '));
     setLastUpdated(new Date().toISOString());
     setIsLoading(false);
     setIsRefreshing(false);
+    setIsDirectoryLoading(false);
   };
 
   useEffect(() => {
@@ -353,7 +384,7 @@ export default function RealtimeMonitor() {
     }, 15000);
 
     return () => window.clearInterval(timer);
-  }, [flaggedOnly, selectedChatId]);
+  }, [directorySearch, flaggedOnly, selectedChatId]);
 
   useEffect(() => {
     if (location.pathname !== '/live') {
@@ -421,6 +452,15 @@ export default function RealtimeMonitor() {
       setError((current) => current || 'Bridge socket reported an operational error.');
     });
 
+    socket.on('monitored_contacts', (payload: { session_key?: string | null; contacts?: MonitoredContact[] } | undefined) => {
+      if (!singleAccountMode && payload?.session_key && bridgeSessionKey && payload.session_key !== bridgeSessionKey) {
+        return;
+      }
+      if (Array.isArray(payload?.contacts)) {
+        setMonitoredContacts(payload.contacts);
+      }
+    });
+
     return () => {
       socket.close();
     };
@@ -456,46 +496,35 @@ export default function RealtimeMonitor() {
   }, [chatSearch, flaggedOnly, messages]);
 
   const openAlerts = alerts.filter((alert) => alert.status === 'open');
+  const showDirectoryLoadingState = isDirectoryLoading && directoryItems.length === 0;
+  const monitoredKeys = useMemo(
+    () => new Set(monitoredContacts.map((contact) => `${contact.chat_type}:${contact.chat_key}`)),
+    [monitoredContacts]
+  );
 
-  const saveMonitor = async () => {
-    if (!monitorName.trim() || !monitorKey.trim()) {
-      setError('Monitor name and chat key are required.');
-      return;
-    }
-
+  const saveMonitor = async (item: ChatDirectoryItem) => {
     try {
       setIsSavingMonitor(true);
       const response = await apiClient.post('/api/whatsapp/monitored-contacts', {
-        contact_name: monitorName.trim(),
-        chat_key: monitorKey.trim(),
-        chat_type: monitorType,
+        contact_name: item.display_name.trim(),
+        chat_key: item.chat_key.trim(),
+        chat_type: item.chat_type,
         is_active: true,
       });
       const created = response.data as MonitoredContact;
       setMonitoredContacts((current) => [created, ...current.filter((item) => item.id !== created.id)]);
-      setMonitorName('');
-      setMonitorKey('');
-      setMonitorType('direct');
+      setDirectoryItems((current) =>
+        current.map((entry) =>
+          entry.chat_key === item.chat_key && entry.chat_type === item.chat_type
+            ? { ...entry, is_monitored: true }
+            : entry
+        )
+      );
       setError('');
     } catch (saveError: any) {
       setError(saveError?.response?.data?.detail || 'Could not save the monitored contact.');
     } finally {
       setIsSavingMonitor(false);
-    }
-  };
-
-  const quickAddMonitor = async (chat: LiveChatSummary) => {
-    try {
-      const response = await apiClient.post('/api/whatsapp/monitored-contacts', {
-        contact_name: chat.chat_name,
-        chat_key: chat.external_chat_id || chat.chat_name,
-        chat_type: chat.chat_type || 'direct',
-        is_active: true,
-      });
-      const created = response.data as MonitoredContact;
-      setMonitoredContacts((current) => [created, ...current.filter((item) => item.id !== created.id)]);
-    } catch (saveError: any) {
-      setError(saveError?.response?.data?.detail || 'Could not add this chat to the monitor list.');
     }
   };
 
@@ -513,8 +542,18 @@ export default function RealtimeMonitor() {
 
   const deleteMonitor = async (contactId: number) => {
     try {
+      const removed = monitoredContacts.find((item) => item.id === contactId);
       await apiClient.delete(`/api/whatsapp/monitored-contacts/${contactId}`);
       setMonitoredContacts((current) => current.filter((item) => item.id !== contactId));
+      if (removed) {
+        setDirectoryItems((current) =>
+          current.map((entry) =>
+            entry.chat_key === removed.chat_key && entry.chat_type === removed.chat_type
+              ? { ...entry, is_monitored: false }
+              : entry
+          )
+        );
+      }
     } catch {
       setError('Could not delete monitor.');
     }
@@ -547,9 +586,9 @@ export default function RealtimeMonitor() {
   }, [connected, hasAutoStartedBridge, isLoading, isRestarting, session, status?.status]);
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(10,18,34,0.98),rgba(8,14,26,0.96))] p-5 shadow-[0_30px_120px_rgba(34,211,238,0.08)]">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+    <div className="mx-auto max-w-7xl space-y-4 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
+      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(10,18,34,0.98),rgba(8,14,26,0.96))] p-4 shadow-[0_30px_120px_rgba(34,211,238,0.08)]">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
             <div className="rounded-2xl bg-cyan-500/14 p-3 text-cyan-300">
               <Smartphone className="h-6 w-6" />
@@ -586,7 +625,7 @@ export default function RealtimeMonitor() {
           </div>
         </div>
 
-        <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <SimpleStat
             label="Bridge"
             value={statusLabel}
@@ -609,7 +648,7 @@ export default function RealtimeMonitor() {
           />
         </div>
 
-        <div className="mt-5 rounded-[20px] border border-white/8 bg-slate-950/45 p-4 text-sm leading-7 text-slate-300">
+        <div className="mt-4 rounded-[20px] border border-white/8 bg-slate-950/45 p-3 text-sm leading-6 text-slate-300">
           {singleAccountMode
             ? 'Scan once, then receive messages.'
             : 'Each workspace uses its own bridge.'}
@@ -622,9 +661,9 @@ export default function RealtimeMonitor() {
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-        <section className="space-y-6">
-          <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+      <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+        <section className="space-y-4">
+          <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
             <div className="flex items-center gap-3">
               <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
                 {connected ? <Wifi className="h-5 w-5 text-emerald-300" /> : <WifiOff className="h-5 w-5 text-amber-300" />}
@@ -635,15 +674,15 @@ export default function RealtimeMonitor() {
               </div>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-[22px] border border-white/8 bg-slate-950/60 p-4">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-[22px] border border-white/8 bg-slate-950/60 p-3">
                 <p className="text-sm text-slate-400">Current state</p>
                 <p className="mt-2 text-base text-white">{status?.reason || bridgeHealth?.detail || 'Waiting for update.'}</p>
                 <p className="mt-3 text-xs text-slate-500">
                   {lastUpdated ? `Last updated ${formatDateTime(lastUpdated)}` : 'Not refreshed yet'}
                 </p>
               </div>
-              <div className="rounded-[22px] border border-white/8 bg-slate-950/60 p-4">
+              <div className="rounded-[22px] border border-white/8 bg-slate-950/60 p-3">
                 <p className="text-sm text-slate-400">Connected account</p>
                 <p className="mt-2 text-base text-white">{status?.connected_phone || 'Not paired yet'}</p>
                 <p className="mt-3 text-xs text-slate-500">
@@ -652,17 +691,17 @@ export default function RealtimeMonitor() {
               </div>
             </div>
 
-            <div className="mt-5 rounded-[24px] border border-dashed border-white/10 bg-slate-950/60 p-5 text-center">
-              <div className="mb-4 flex items-center justify-center gap-2 text-cyan-300">
+            <div className="mt-4 rounded-[24px] border border-dashed border-white/10 bg-slate-950/60 p-4 text-center">
+              <div className="mb-3 flex items-center justify-center gap-2 text-cyan-300">
                 <QrCode className="h-5 w-5" />
                 <span className="text-sm font-medium">QR Pairing</span>
               </div>
               {qrImage ? (
-                <img src={qrImage} alt="WhatsApp QR code" className="mx-auto rounded-[20px] bg-white p-3 shadow-lg" />
+                <img src={qrImage} alt="WhatsApp QR code" className="mx-auto w-full max-w-[12rem] rounded-[20px] bg-white p-3 shadow-lg" />
               ) : (
                 <div className="mx-auto max-w-sm">
                   <p className="text-lg font-medium text-slate-200">QR code not available</p>
-                  <p className="mt-3 text-sm leading-7 text-slate-400">
+                  <p className="mt-2 text-sm leading-6 text-slate-400">
                     Click connect and wait for QR.
                   </p>
                 </div>
@@ -673,62 +712,117 @@ export default function RealtimeMonitor() {
             </div>
           </div>
 
-          <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+          <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
             <div className="flex items-center gap-3">
               <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
                 <Users className="h-5 w-5 text-cyan-300" />
               </div>
               <div>
-                <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">Optional monitor list</p>
-                <h2 className="mt-1 text-2xl font-semibold text-white">Contacts and groups</h2>
+                <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">Chat selection</p>
+                <h2 className="mt-1 text-2xl font-semibold text-white">Choose groups and chats</h2>
               </div>
             </div>
 
-            <p className="mt-4 text-sm leading-7 text-slate-400">
-              Optional for demo use.
+            <p className="mt-3 text-sm leading-6 text-slate-400">
+              After QR pairing, choose only the chats you want SafeChat to analyze. Messages outside this selected list are ignored.
             </p>
 
-            <div className="mt-5 grid gap-3 md:grid-cols-[1.1fr_1fr_0.8fr_auto]">
-              <input value={monitorName} onChange={(event) => setMonitorName(event.target.value)} placeholder="Display name" className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-500/30" />
-              <input value={monitorKey} onChange={(event) => setMonitorKey(event.target.value)} placeholder="Chat key or phone" className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-500/30" />
-              <select value={monitorType} onChange={(event) => setMonitorType(event.target.value as 'direct' | 'group')} className="min-h-11 rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-500/30">
-                <option value="direct">Direct</option>
-                <option value="group">Group</option>
-              </select>
-              <button onClick={saveMonitor} disabled={isSavingMonitor} className="min-h-11 rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-3 text-sm font-medium text-white transition hover:bg-white/[0.08] disabled:opacity-60">
-                {isSavingMonitor ? 'Saving...' : 'Add'}
-              </button>
+            <div className="mt-4">
+              <input
+                value={directorySearch}
+                onChange={(event) => setDirectorySearch(event.target.value)}
+                placeholder="Search groups, frequent chats, or a contact number"
+                className="min-h-11 w-full rounded-2xl border border-white/8 bg-slate-950/60 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-500/30"
+              />
             </div>
 
-            <div className="mt-5 space-y-3">
-              {monitoredContacts.length === 0 ? (
+            <div className="mt-4 max-h-[24rem] space-y-3 overflow-auto pr-1">
+              {showDirectoryLoadingState ? (
                 <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-sm text-slate-400">
-                  No monitors yet.
+                  Loading connected chats...
+                </div>
+              ) : directoryItems.length === 0 ? (
+                <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-sm text-slate-400">
+                  {connected ? 'No connected chats found yet. Open WhatsApp and let recent chats sync.' : 'Connect WhatsApp with the QR code first to load groups and chats.'}
                 </div>
               ) : (
-                monitoredContacts.slice(0, 6).map((contact) => (
-                  <div key={contact.id} className="flex flex-col gap-3 rounded-[22px] border border-white/8 bg-slate-950/55 p-4 sm:flex-row sm:items-center sm:justify-between">
+                directoryItems.map((item) => {
+                  const selected = monitoredKeys.has(`${item.chat_type}:${item.chat_key}`);
+                  return (
+                  <div key={`${item.chat_type}:${item.chat_key}`} className="flex flex-col gap-3 rounded-[22px] border border-white/8 bg-slate-950/55 p-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0">
-                      <p className="truncate font-medium text-white">{contact.contact_name}</p>
-                      <p className="mt-1 text-xs text-slate-400">{(contact.chat_type || 'direct').toUpperCase()} | {contact.chat_key}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate font-medium text-white">{item.display_name}</p>
+                        <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-slate-400">
+                          {item.chat_type === 'group' ? 'Group' : 'Chat'}
+                        </span>
+                        <span className="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-300">
+                          {item.source}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-400">{item.phone_number || item.chat_key}</p>
+                      <p className="mt-2 text-xs text-slate-500">
+                        {item.recent_message_count > 0 ? `${item.recent_message_count} recent messages` : 'Available to monitor'}
+                        {item.last_activity_at ? ` | Last activity ${formatDateTime(item.last_activity_at)}` : ''}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => void toggleMonitor(contact)} className={`rounded-full border px-3 py-1.5 text-xs ${contact.is_active ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-white/8 bg-white/[0.03] text-slate-400'}`}>
-                        {contact.is_active ? 'Active' : 'Paused'}
-                      </button>
-                      <button onClick={() => void deleteMonitor(contact.id)} className="rounded-full border border-white/8 bg-white/[0.03] p-2 text-slate-400 transition hover:text-rose-300" aria-label={`Delete ${contact.contact_name}`}>
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
+                    <button
+                      onClick={() => void saveMonitor(item)}
+                      disabled={selected || isSavingMonitor}
+                      className={`min-h-11 rounded-2xl border px-4 py-3 text-sm font-medium transition ${
+                        selected
+                          ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                          : 'border-white/8 bg-white/[0.04] text-white hover:bg-white/[0.08]'
+                      } disabled:opacity-70`}
+                    >
+                      {selected ? 'Selected' : (isSavingMonitor ? 'Adding...' : 'Analyze this chat')}
+                    </button>
                   </div>
-                ))
+                )})
               )}
+            </div>
+
+            <div className="mt-4 rounded-[22px] border border-white/8 bg-slate-950/45 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-white">Selected chats</p>
+                  <p className="mt-1 text-xs text-slate-500">Only these chats are analyzed live.</p>
+                </div>
+                <span className="rounded-full border border-white/8 bg-white/[0.03] px-3 py-1 text-xs text-slate-300">
+                  {monitoredContacts.length}
+                </span>
+              </div>
+
+              <div className="mt-3 max-h-[16rem] space-y-3 overflow-auto pr-1">
+                {monitoredContacts.length === 0 ? (
+                  <div className="rounded-[18px] border border-dashed border-white/10 bg-slate-950/50 p-4 text-sm text-slate-400">
+                    No chats selected yet.
+                  </div>
+                ) : (
+                  monitoredContacts.slice(0, 8).map((contact) => (
+                    <div key={contact.id} className="flex flex-col gap-3 rounded-[18px] border border-white/8 bg-slate-950/55 p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-white">{contact.contact_name}</p>
+                        <p className="mt-1 text-xs text-slate-400">{(contact.chat_type || 'direct').toUpperCase()} | {contact.chat_key}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => void toggleMonitor(contact)} className={`rounded-full border px-3 py-1.5 text-xs ${contact.is_active ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-white/8 bg-white/[0.03] text-slate-400'}`}>
+                          {contact.is_active ? 'Active' : 'Paused'}
+                        </button>
+                        <button onClick={() => void deleteMonitor(contact.id)} className="rounded-full border border-white/8 bg-white/[0.03] p-2 text-slate-400 transition hover:text-rose-300" aria-label={`Delete ${contact.contact_name}`}>
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         </section>
 
-        <section className="space-y-6">
-          <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+        <section className="space-y-4">
+          <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">Live feed</p>
@@ -754,7 +848,7 @@ export default function RealtimeMonitor() {
               </div>
             </div>
 
-            <div className="mt-5 space-y-3">
+            <div className="mt-4 max-h-[30rem] space-y-3 overflow-auto pr-1">
               {isLoading ? (
                 <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-6 text-sm text-slate-400">
                   Loading live messages...
@@ -765,7 +859,7 @@ export default function RealtimeMonitor() {
                 </div>
               ) : (
                 visibleMessages.slice(0, 18).map((message) => (
-                  <article key={message.id} className={`rounded-[22px] border p-4 ${messageCardTone(message.risk_score)}`}>
+                  <article key={message.id} className={`rounded-[22px] border p-3 ${messageCardTone(message.risk_score)}`}>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
@@ -779,7 +873,7 @@ export default function RealtimeMonitor() {
                             </span>
                           )}
                         </div>
-                        <p className="mt-3 text-sm leading-7 text-slate-200">{message.message}</p>
+                        <p className="mt-2 text-sm leading-6 text-slate-200">{message.message}</p>
                         <p className="mt-2 text-xs text-slate-500">{formatDateTime(message.timestamp)}</p>
                       </div>
                       <div className="flex items-center gap-2">
@@ -799,8 +893,8 @@ export default function RealtimeMonitor() {
             </div>
           </div>
 
-          <div className="grid gap-6 lg:grid-cols-2">
-            <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
               <div className="flex items-center gap-3">
                 <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
                   <MessageSquare className="h-5 w-5 text-cyan-300" />
@@ -811,7 +905,7 @@ export default function RealtimeMonitor() {
                 </div>
               </div>
 
-              <div className="mt-5 space-y-3">
+              <div className="mt-4 max-h-[22rem] space-y-3 overflow-auto pr-1">
                 {filteredChats.length === 0 ? (
                   <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-sm text-slate-400">
                     No chats yet.
@@ -822,7 +916,7 @@ export default function RealtimeMonitor() {
                       key={chat.id}
                       type="button"
                       onClick={() => setSelectedChatId((current) => (current === chat.id ? null : chat.id))}
-                      className={`w-full rounded-[22px] border px-4 py-4 text-left transition ${selectedChatId === chat.id ? 'border-cyan-500/25 bg-cyan-500/10' : 'border-white/8 bg-slate-950/55 hover:bg-slate-950/70'}`}
+                      className={`w-full rounded-[22px] border px-4 py-3 text-left transition ${selectedChatId === chat.id ? 'border-cyan-500/25 bg-cyan-500/10' : 'border-white/8 bg-slate-950/55 hover:bg-slate-950/70'}`}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -838,16 +932,9 @@ export default function RealtimeMonitor() {
                           <span className={`rounded-full px-3 py-1.5 text-xs ${chat.unsafe_percentage > 20 ? 'border border-rose-500/20 bg-rose-500/10 text-rose-300' : 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
                             {chat.unsafe_percentage.toFixed(1)}%
                           </span>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void quickAddMonitor(chat);
-                            }}
-                            className="rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-xs text-slate-300 transition hover:bg-white/[0.08]"
-                          >
-                            Save as monitor
-                          </button>
+                          <span className="rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-xs text-slate-300">
+                            {chat.open_alert_count} open alerts
+                          </span>
                         </div>
                       </div>
                     </button>
@@ -856,7 +943,7 @@ export default function RealtimeMonitor() {
               </div>
             </div>
 
-            <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+            <div className="rounded-[28px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
               <div className="flex items-center gap-3">
                 <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
                   <BellRing className="h-5 w-5 text-cyan-300" />
@@ -867,14 +954,14 @@ export default function RealtimeMonitor() {
                 </div>
               </div>
 
-              <div className="mt-5 space-y-3">
+              <div className="mt-4 max-h-[22rem] space-y-3 overflow-auto pr-1">
                 {openAlerts.length === 0 ? (
                   <div className="rounded-[22px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-sm text-slate-400">
                     No open alerts.
                   </div>
                 ) : (
                   openAlerts.slice(0, 8).map((alert) => (
-                    <article key={alert.id} className="rounded-[22px] border border-white/8 bg-slate-950/55 p-4">
+                    <article key={alert.id} className="rounded-[22px] border border-white/8 bg-slate-950/55 p-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
@@ -884,7 +971,7 @@ export default function RealtimeMonitor() {
                             </span>
                           </div>
                           <p className="mt-2 text-xs text-slate-400">{alert.sender} | {formatDateTime(alert.created_at)}</p>
-                          <p className="mt-3 text-sm leading-7 text-slate-300">{alert.message}</p>
+                          <p className="mt-2 text-sm leading-6 text-slate-300">{alert.message}</p>
                         </div>
                         <div className="flex items-center gap-2">
                           <AlertTriangle className="h-5 w-5 text-rose-300" />

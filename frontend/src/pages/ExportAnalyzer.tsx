@@ -57,24 +57,24 @@ export default function ExportAnalyzer() {
   };
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-5 shadow-[0_30px_120px_rgba(59,130,246,0.12)] md:p-6">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+    <div className="mx-auto max-w-7xl space-y-4 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
+      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-4 shadow-[0_30px_120px_rgba(59,130,246,0.12)] md:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="max-w-3xl">
             <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">ANALYZE CHAT</p>
-            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-[3rem]">WhatsApp export review</h1>
-            <p className="mt-3 text-sm leading-7 text-slate-400 md:text-base">
+            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-[2.6rem]">WhatsApp export review</h1>
+            <p className="mt-2 text-sm leading-6 text-slate-400 md:text-base">
               Upload a WhatsApp `.txt` export to generate a moderation report.
             </p>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3 lg:w-[21rem]">
+          <div className="grid gap-2 sm:grid-cols-3 lg:w-[19rem]">
             {[
               { label: 'Input', value: '.txt export', icon: Download },
               { label: 'Output', value: 'Risk report', icon: FileText },
               { label: 'Mode', value: 'Offline', icon: Shield },
             ].map(({ label, value, icon: Icon }) => (
-              <div key={label} className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
+              <div key={label} className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
                 <div className="flex items-center gap-3">
                   <div className="rounded-xl bg-cyan-500/10 p-2 text-cyan-300">
                     <Icon className="h-4 w-4" />
@@ -90,25 +90,25 @@ export default function ExportAnalyzer() {
         </div>
       </section>
 
-      <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+      <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
           <div
-            className="cursor-pointer rounded-[24px] border-2 border-dashed border-blue-500/40 bg-[linear-gradient(180deg,rgba(8,16,35,0.96),rgba(11,18,34,0.88))] p-8 text-center transition hover:border-cyan-500/45 hover:bg-slate-950/70 sm:p-12"
+            className="cursor-pointer rounded-[24px] border-2 border-dashed border-blue-500/40 bg-[linear-gradient(180deg,rgba(8,16,35,0.96),rgba(11,18,34,0.88))] p-6 text-center transition hover:border-cyan-500/45 hover:bg-slate-950/70 sm:p-8"
             onClick={() => document.getElementById('file-upload')?.click()}
           >
-            <div className="mx-auto inline-flex rounded-[22px] border border-cyan-500/20 bg-cyan-500/10 p-5">
-              <Upload className="h-10 w-10 text-cyan-300" />
+            <div className="mx-auto inline-flex rounded-[22px] border border-cyan-500/20 bg-cyan-500/10 p-4">
+              <Upload className="h-8 w-8 text-cyan-300" />
             </div>
-            <h3 className="mt-6 text-2xl font-semibold text-white">Drop export or click to upload</h3>
-            <p className="mt-3 text-sm text-slate-400">
+            <h3 className="mt-4 text-xl font-semibold text-white">Drop export or click to upload</h3>
+            <p className="mt-2 text-sm text-slate-400">
               Supported format: `.txt`
             </p>
             <input type="file" id="file-upload" className="hidden" accept=".txt" onChange={handleFileChange} />
           </div>
 
           {file && (
-            <div className="mt-5 rounded-[22px] border border-white/8 bg-slate-950/65 p-4">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mt-4 rounded-[22px] border border-white/8 bg-slate-950/65 p-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-3">
                   <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
                     <FileText className="h-5 w-5 text-cyan-300" />
@@ -121,7 +121,7 @@ export default function ExportAnalyzer() {
                 <button
                   onClick={handleUpload}
                   disabled={isUploading}
-                  className="inline-flex min-h-12 items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex min-h-11 items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isUploading ? 'Analyzing export...' : 'Run analysis'}
                 </button>
@@ -130,7 +130,7 @@ export default function ExportAnalyzer() {
           )}
 
           {error && (
-            <div className="mt-5 rounded-[22px] border border-rose-500/20 bg-rose-500/8 p-4 text-rose-300">
+            <div className="mt-4 rounded-[22px] border border-rose-500/20 bg-rose-500/8 p-3 text-rose-300">
               <div className="flex items-start gap-3">
                 <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
                 <div>
@@ -147,18 +147,18 @@ export default function ExportAnalyzer() {
           )}
 
           {results && (
-            <div className="mt-5 rounded-[22px] border border-emerald-500/20 bg-emerald-500/8 p-5">
+            <div className="mt-4 rounded-[22px] border border-emerald-500/20 bg-emerald-500/8 p-4">
               <div className="flex items-start gap-3">
                 <CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-emerald-300" />
                 <div className="min-w-0 flex-1">
                   <h4 className="text-lg font-semibold text-white">Analysis complete</h4>
                   <p className="mt-2 text-sm text-slate-300">{results.message}</p>
-                  <div className="mt-4 rounded-2xl border border-white/8 bg-slate-950/55 p-4 font-mono text-sm text-emerald-300">
+                  <div className="mt-3 rounded-2xl border border-white/8 bg-slate-950/55 p-3 font-mono text-sm text-emerald-300">
                     {results.chat_id === 'guest' ? 'Guest analysis only' : `Chat ID: ${results.chat_id}`}
                   </div>
                   <button
                     onClick={() => navigate(`/results/${results.chat_id}`)}
-                    className="mt-4 inline-flex min-h-11 items-center justify-center rounded-2xl border border-white/8 bg-white/[0.04] px-5 py-3 text-sm font-medium text-white transition hover:bg-white/[0.08]"
+                    className="mt-3 inline-flex min-h-10 items-center justify-center rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-white/[0.08]"
                   >
                     Open full report
                   </button>
@@ -168,9 +168,9 @@ export default function ExportAnalyzer() {
           )}
         </section>
 
-        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
           <h2 className="text-2xl font-semibold text-white">What happens after upload</h2>
-          <div className="mt-6 space-y-4">
+          <div className="mt-4 space-y-3">
             {[
               {
                 title: 'Parse export',
@@ -185,7 +185,7 @@ export default function ExportAnalyzer() {
                 text: 'Review flagged messages and summary.',
               },
             ].map(({ title, text }, index) => (
-              <div key={title} className="flex items-start gap-4 rounded-[20px] border border-white/8 bg-slate-950/55 p-4">
+              <div key={title} className="flex items-start gap-3 rounded-[20px] border border-white/8 bg-slate-950/55 p-3">
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-500/25 bg-cyan-500/10 text-sm font-semibold text-cyan-300">
                   {index + 1}
                 </div>

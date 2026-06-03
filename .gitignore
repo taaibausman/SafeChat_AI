@@ -18,6 +18,8 @@ whatsapp/node_modules/
 safechat.db
 whatsapp/auth/
 whatsapp/auth_8002/
+whatsapp/auth-stale-*/
+whatsapp messages.txt
 .easyocr-home/
 backend/.env
 whatsapp/.env

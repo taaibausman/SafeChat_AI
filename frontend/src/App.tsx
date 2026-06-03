@@ -101,9 +101,9 @@ function StatCard({
   };
 
   return (
-    <div className={`rounded-[22px] border bg-gradient-to-br p-5 ${toneMap[tone]}`}>
+    <div className={`rounded-[22px] border bg-gradient-to-br p-4 ${toneMap[tone]}`}>
       <p className="text-sm text-slate-400">{label}</p>
-      <p className="mt-3 text-3xl font-semibold md:text-4xl">{value}</p>
+      <p className="mt-2 text-2xl font-semibold md:text-3xl">{value}</p>
     </div>
   );
 }
@@ -114,7 +114,7 @@ function Sidebar({ onNavigate, session }: { onNavigate?: () => void; session: Au
 
   return (
     <div className="flex h-full w-full flex-col border-r border-white/8 bg-slate-950/85 backdrop-blur">
-      <div className="flex items-center gap-3 border-b border-white/6 px-5 py-5">
+      <div className="flex items-center gap-3 border-b border-white/6 px-4 py-4">
         <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-2.5">
           <Shield className="h-5 w-5 text-cyan-300" />
         </div>
@@ -124,7 +124,7 @@ function Sidebar({ onNavigate, session }: { onNavigate?: () => void; session: Au
         </div>
       </div>
 
-      <nav className="flex-1 space-y-2 px-4 py-5">
+      <nav className="flex-1 space-y-2 px-3 py-4">
         {navItems.map(({ to, label, icon: Icon }) => {
           const active = location.pathname === to;
           return (
@@ -132,7 +132,7 @@ function Sidebar({ onNavigate, session }: { onNavigate?: () => void; session: Au
               key={to}
               to={to}
               onClick={onNavigate}
-              className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-sm transition ${
+              className={`flex items-center gap-3 rounded-2xl px-4 py-2.5 text-sm transition ${
                 active
                   ? 'border border-cyan-500/25 bg-cyan-500/10 text-white shadow-[0_0_30px_rgba(56,189,248,0.12)]'
                   : 'border border-transparent text-slate-400 hover:border-white/6 hover:bg-white/[0.03] hover:text-white'
@@ -145,11 +145,11 @@ function Sidebar({ onNavigate, session }: { onNavigate?: () => void; session: Au
         })}
       </nav>
 
-      <div className="border-t border-white/6 p-4">
+      <div className="border-t border-white/6 p-3">
         <Link
           to="/"
           onClick={onNavigate}
-          className="mb-2 flex items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-400 transition hover:bg-white/[0.03] hover:text-white"
+          className="mb-2 flex items-center gap-3 rounded-2xl px-4 py-2.5 text-sm text-slate-400 transition hover:bg-white/[0.03] hover:text-white"
         >
           <ArrowUpRight className="h-4 w-4" />
           Landing Page
@@ -158,9 +158,9 @@ function Sidebar({ onNavigate, session }: { onNavigate?: () => void; session: Au
           type="button"
           onClick={() => {
             storeSession(null);
-            window.location.assign('/settings');
+            window.location.assign('/login');
           }}
-          className="flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-300"
+          className="flex w-full items-center gap-3 rounded-2xl px-4 py-2.5 text-sm text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-300"
         >
           <LogOut className="h-4 w-4" />
           Logout
@@ -175,13 +175,13 @@ function AppTopBar({ onMenu, session }: { onMenu: () => void; session: AuthSessi
   const current = getWorkspaceNav(session).find((item) => item.to === location.pathname);
 
   return (
-    <div className="sticky top-0 z-30 border-b border-white/6 bg-slate-950/75 px-4 py-4 backdrop-blur sm:px-6 lg:px-8">
+    <div className="sticky top-0 z-30 border-b border-white/6 bg-slate-950/75 px-4 py-3 backdrop-blur sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={onMenu}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-white/8 bg-white/[0.03] text-slate-200 lg:hidden"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/8 bg-white/[0.03] text-slate-200 lg:hidden"
           >
             <Menu className="h-5 w-5" />
           </button>
@@ -191,7 +191,7 @@ function AppTopBar({ onMenu, session }: { onMenu: () => void; session: AuthSessi
           </div>
         </div>
 
-        <div className="hidden items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300 sm:flex">
+          <div className="hidden items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300 sm:flex">
           <span className="h-2 w-2 rounded-full bg-emerald-400" />
           AI engine online
         </div>
@@ -237,7 +237,7 @@ function Layout({ children }: { children: React.ReactNode }) {
 
         <div className="flex min-w-0 flex-1 flex-col">
           <AppTopBar session={session} onMenu={() => setMobileMenuOpen(true)} />
-          <main className="flex-1 pb-24 lg:pb-8">{children}</main>
+          <main className="flex-1 pb-12 lg:pb-6">{children}</main>
         </div>
       </div>
     </div>

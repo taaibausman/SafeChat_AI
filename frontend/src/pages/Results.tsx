@@ -143,7 +143,7 @@ export default function Results() {
   const { analysis, flaggedMessages, highRisk, pieData } = derived;
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
+    <div className="mx-auto max-w-7xl space-y-4 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
       <div className="flex flex-wrap items-center gap-3">
         <Link
           to="/analyze"
@@ -162,12 +162,12 @@ export default function Results() {
         </button>
       </div>
 
-      <section className="overflow-hidden rounded-[28px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-6 shadow-[0_30px_120px_rgba(59,130,246,0.15)] md:p-8">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+      <section className="overflow-hidden rounded-[28px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-4 shadow-[0_30px_120px_rgba(59,130,246,0.15)] md:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl">
             <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">ANALYSIS REPORT</p>
-            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-5xl">{data.chat_name}</h1>
-            <p className="mt-4 text-sm leading-7 text-slate-400 md:text-base">{analysis?.summary}</p>
+            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-4xl">{data.chat_name}</h1>
+            <p className="mt-3 text-sm leading-6 text-slate-400 md:text-base">{analysis?.summary}</p>
           </div>
 
           <div className={`inline-flex items-center gap-3 rounded-full border px-5 py-3 text-sm font-semibold ${highRisk ? 'border-rose-500/25 bg-rose-500/10 text-rose-300' : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'}`}>
@@ -177,12 +177,12 @@ export default function Results() {
         </div>
       </section>
 
-      <div className="grid gap-6 xl:grid-cols-[0.88fr_1.12fr]">
-        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+      <div className="grid gap-4 xl:grid-cols-[0.88fr_1.12fr]">
+        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
           <p className="text-xs uppercase tracking-[0.22em] text-cyan-400">OVERVIEW</p>
           <h2 className="mt-2 text-2xl font-semibold text-white">Safety ratio</h2>
 
-          <div className="mt-6 h-60">
+          <div className="mt-4 h-52">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie data={pieData} cx="50%" cy="50%" innerRadius={72} outerRadius={92} paddingAngle={4} dataKey="value">
@@ -209,23 +209,23 @@ export default function Results() {
             </div>
           </div>
 
-          <div className="mt-6 grid gap-4 sm:grid-cols-3">
-            <div className="rounded-[20px] border border-white/8 bg-slate-950/60 p-4">
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-[20px] border border-white/8 bg-slate-950/60 p-3">
               <p className="text-sm text-slate-400">Messages analyzed</p>
               <p className="mt-3 text-2xl font-semibold text-white">{data.messages.length}</p>
             </div>
-            <div className="rounded-[20px] border border-white/8 bg-slate-950/60 p-4">
+            <div className="rounded-[20px] border border-white/8 bg-slate-950/60 p-3">
               <p className="text-sm text-slate-400">Flagged messages</p>
               <p className="mt-3 text-2xl font-semibold text-rose-400">{flaggedMessages.length}</p>
             </div>
-            <div className="rounded-[20px] border border-white/8 bg-slate-950/60 p-4">
+            <div className="rounded-[20px] border border-white/8 bg-slate-950/60 p-3">
               <p className="text-sm text-slate-400">Average score</p>
               <p className="mt-3 text-2xl font-semibold text-white">{analysis?.overall_score?.toFixed(1) ?? '0.0'}</p>
             </div>
           </div>
         </section>
 
-        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+        <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
           <div className="flex items-center gap-3">
             <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
               <AlertTriangle className="h-5 w-5 text-amber-300" />
@@ -236,9 +236,9 @@ export default function Results() {
             </div>
           </div>
 
-          <div className="mt-5 space-y-3">
+          <div className="mt-4 max-h-[36rem] space-y-3 overflow-auto pr-1">
             {flaggedMessages.slice(0, 24).map((msg, i) => (
-              <div key={i} className="rounded-[22px] border border-rose-500/18 bg-rose-500/[0.05] p-4">
+              <div key={i} className="rounded-[22px] border border-rose-500/18 bg-rose-500/[0.05] p-3">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <p className="font-semibold text-slate-100">{msg.sender}</p>
@@ -260,7 +260,7 @@ export default function Results() {
                     )}
                   </div>
                 </div>
-                <p className="mt-3 text-sm leading-7 text-slate-100">{msg.message}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-100">{msg.message}</p>
               </div>
             ))}
             {flaggedMessages.length === 0 && (
@@ -272,7 +272,7 @@ export default function Results() {
         </section>
       </div>
 
-      <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+      <section className="rounded-[28px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex items-center gap-3">
             <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
@@ -288,7 +288,7 @@ export default function Results() {
           </div>
         </div>
 
-        <div className="mt-5 overflow-hidden rounded-[22px] border border-white/8 bg-slate-950/55">
+        <div className="mt-4 max-h-[38rem] overflow-hidden rounded-[22px] border border-white/8 bg-slate-950/55">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-left text-sm">
               <thead className="border-b border-white/8 bg-white/[0.03] text-xs uppercase tracking-[0.16em] text-slate-500">

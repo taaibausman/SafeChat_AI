@@ -10,6 +10,26 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+
+def load_backend_env() -> None:
+    env_path = os.path.join(ROOT_DIR, "backend", ".env")
+    if not os.path.exists(env_path):
+        return
+
+    with open(env_path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+load_backend_env()
+
 from backend.api.chat_analyzer import router as chat_router
 from backend.api.auth import router as auth_router
 from backend.api.image_analyzer import router as image_router

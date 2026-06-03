@@ -37,35 +37,39 @@ export default function ImageAnalyzer() {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        timeout: 60000,
+        timeout: 180000,
       });
       navigate(`/results/${response.data.chat_id}`);
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'An error occurred during OCR analysis.');
+      if (err?.code === 'ECONNABORTED') {
+        setError('OCR analysis is taking too long. Try a smaller screenshot or retry now that the faster OCR path is enabled.');
+      } else {
+        setError(err.response?.data?.detail || 'An error occurred during OCR analysis.');
+      }
     } finally {
       setIsUploading(false);
     }
   };
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-5 shadow-[0_30px_120px_rgba(59,130,246,0.12)] md:p-6">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+    <div className="mx-auto max-w-7xl space-y-4 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
+      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(18,28,58,0.96),rgba(21,15,39,0.94))] p-4 shadow-[0_30px_120px_rgba(59,130,246,0.12)] md:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="max-w-3xl">
             <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">IMAGE ANALYZER</p>
-            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-[3rem]">Screenshot OCR review</h1>
-            <p className="mt-3 text-sm leading-7 text-slate-400 md:text-base">
+            <h1 className="text-3xl font-semibold tracking-tight text-white md:text-[2.6rem]">Screenshot OCR review</h1>
+            <p className="mt-2 text-sm leading-6 text-slate-400 md:text-base">
               Upload a chat screenshot to extract text and generate a moderation report.
             </p>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3 lg:w-[22rem]">
+          <div className="grid gap-2 sm:grid-cols-3 lg:w-[20rem]">
             {[
               { label: 'Input', value: 'Chat image', icon: ImageIcon },
               { label: 'Output', value: 'OCR + report', icon: ScanLine },
               { label: 'Formats', value: 'JPG, PNG, WEBP', icon: Shield },
             ].map(({ label, value, icon: Icon }) => (
-              <div key={label} className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
+              <div key={label} className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
                 <div className="flex items-center gap-3">
                   <div className="rounded-xl bg-cyan-500/10 p-2 text-cyan-300">
                     <Icon className="h-4 w-4" />
@@ -81,23 +85,23 @@ export default function ImageAnalyzer() {
         </div>
       </section>
 
-      <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+      <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
+        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
           <div
-            className="cursor-pointer rounded-[24px] border-2 border-dashed border-blue-500/40 bg-[linear-gradient(180deg,rgba(8,16,35,0.96),rgba(11,18,34,0.88))] p-8 text-center transition hover:border-cyan-500/45 hover:bg-slate-950/70 sm:p-12"
+            className="cursor-pointer rounded-[24px] border-2 border-dashed border-blue-500/40 bg-[linear-gradient(180deg,rgba(8,16,35,0.96),rgba(11,18,34,0.88))] p-6 text-center transition hover:border-cyan-500/45 hover:bg-slate-950/70 sm:p-8"
             onClick={() => document.getElementById('image-upload')?.click()}
           >
-            <div className="mx-auto inline-flex rounded-[22px] border border-cyan-500/20 bg-cyan-500/10 p-5">
-              <ScanLine className="h-10 w-10 text-cyan-300" />
+            <div className="mx-auto inline-flex rounded-[22px] border border-cyan-500/20 bg-cyan-500/10 p-4">
+              <ScanLine className="h-8 w-8 text-cyan-300" />
             </div>
-            <h3 className="mt-6 text-2xl font-semibold text-white">Drop screenshot or click to upload</h3>
-            <p className="mt-3 text-sm text-slate-400">Supported formats: `JPG`, `PNG`, `WEBP`</p>
+            <h3 className="mt-4 text-xl font-semibold text-white">Drop screenshot or click to upload</h3>
+            <p className="mt-2 text-sm text-slate-400">Supported formats: `JPG`, `PNG`, `WEBP`</p>
             <input type="file" id="image-upload" className="hidden" accept="image/*" onChange={handleFileChange} />
           </div>
 
           {previewUrl && (
-            <div className="mt-5 rounded-[22px] border border-white/8 bg-slate-950/65 p-4">
-              <div className="mb-4 flex items-center gap-3">
+            <div className="mt-4 rounded-[22px] border border-white/8 bg-slate-950/65 p-3">
+              <div className="mb-3 flex items-center gap-3">
                 <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
                   <View className="h-5 w-5 text-cyan-300" />
                 </div>
@@ -108,13 +112,13 @@ export default function ImageAnalyzer() {
               </div>
 
               <div className="overflow-hidden rounded-[20px] border border-white/8 bg-slate-950">
-                <img src={previewUrl} alt="Preview" className="aspect-[4/5] w-full object-cover md:aspect-[16/10]" />
+                <img src={previewUrl} alt="Preview" className="max-h-[20rem] w-full object-contain" />
               </div>
 
               <button
                 onClick={handleUpload}
                 disabled={isUploading}
-                className="mt-4 inline-flex min-h-12 w-full items-center justify-center gap-3 rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-3 rounded-2xl bg-gradient-to-r from-cyan-400 to-blue-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <ImageIcon className="h-5 w-5" />
                 {isUploading ? 'Running OCR and analysis...' : 'Run OCR analysis'}
@@ -123,7 +127,7 @@ export default function ImageAnalyzer() {
           )}
 
           {error && (
-            <div className="mt-5 rounded-[22px] border border-rose-500/20 bg-rose-500/8 p-4 text-rose-300">
+            <div className="mt-4 rounded-[22px] border border-rose-500/20 bg-rose-500/8 p-3 text-rose-300">
               <div className="flex items-start gap-3">
                 <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
                 <p className="text-sm">{error}</p>
@@ -132,10 +136,9 @@ export default function ImageAnalyzer() {
           )}
         </section>
 
-        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-6">
+        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] md:p-5">
           <h2 className="text-2xl font-semibold text-white">What happens after upload</h2>
-
-          <div className="mt-6 space-y-4">
+          <div className="mt-4 space-y-3">
             {[
               {
                 title: 'Extract visible text',
@@ -150,7 +153,7 @@ export default function ImageAnalyzer() {
                 text: 'Open the result page to inspect flagged lines and summary.',
               },
             ].map(({ title, text }, index) => (
-              <div key={title} className="flex items-start gap-4 rounded-[20px] border border-white/8 bg-slate-950/55 p-4">
+              <div key={title} className="flex items-start gap-3 rounded-[20px] border border-white/8 bg-slate-950/55 p-3">
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-500/25 bg-cyan-500/10 text-sm font-semibold text-cyan-300">
                   {index + 1}
                 </div>

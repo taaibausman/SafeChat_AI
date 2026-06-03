@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import time
 from datetime import datetime, timezone
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -92,6 +93,148 @@ def _strip_inline_timestamp(text: str) -> str:
     return re.sub(r"\b\d{1,2}[.:]\d{2}\s*(?:am|pm)?\b", "", text, flags=re.IGNORECASE).strip(" -:|")
 
 
+def _is_weird_mixed_case_token(token: str) -> bool:
+    alpha = re.sub(r"[^A-Za-z]", "", token)
+    if len(alpha) < 5:
+        return False
+    upper = sum(char.isupper() for char in alpha)
+    lower = sum(char.islower() for char in alpha)
+    return upper >= 2 and lower >= 2 and not alpha.istitle() and not alpha.isupper() and not alpha.islower()
+
+
+def _token_looks_like_ocr_noise(token: str) -> bool:
+    alpha = re.sub(r"[^A-Za-z]", "", token)
+    if not alpha:
+        return True
+    if len(alpha) <= 2:
+        return True
+    if re.fullmatch(r"[aeiouyAEIOUY]+", alpha):
+        return True
+    vowel_count = sum(1 for char in alpha.lower() if char in {"a", "e", "i", "o", "u", "y"})
+    if len(alpha) <= 3 and vowel_count / max(len(alpha), 1) >= 0.66:
+        return True
+    if _is_weird_mixed_case_token(alpha):
+        return True
+    return False
+
+
+def _ocr_text_quality_score(text: str) -> float:
+    compact = re.sub(r"\s+", " ", text).strip()
+    if not compact:
+        return float("-inf")
+
+    alpha_tokens = re.findall(r"[A-Za-z']+", compact)
+    if not alpha_tokens:
+        return float("-inf")
+
+    alpha_chars = sum(len(token) for token in alpha_tokens)
+    short_tokens = sum(1 for token in alpha_tokens if len(token) <= 1)
+    vowel_only_tokens = sum(1 for token in alpha_tokens if re.fullmatch(r"[aeiouyAEIOUY]+", token))
+    weird_case_tokens = sum(1 for token in alpha_tokens if _is_weird_mixed_case_token(token))
+    long_tokens = sum(1 for token in alpha_tokens if len(token) >= 13)
+    symbol_count = sum(1 for char in compact if not char.isalnum() and not char.isspace())
+    avg_len = alpha_chars / max(len(alpha_tokens), 1)
+
+    score = alpha_chars + (len(alpha_tokens) * 2.5)
+    score -= short_tokens * 4
+    score -= vowel_only_tokens * 4
+    score -= weird_case_tokens * 7
+    score -= long_tokens * 4
+    score -= symbol_count * 1.5
+    if 2.6 <= avg_len <= 6.5:
+        score += 6
+    return score
+
+
+def _clean_ocr_line_candidate(text: str) -> str:
+    compact = re.sub(r"\s+", " ", text).strip(" -:|")
+    if not compact:
+        return ""
+
+    raw_tokens = compact.split()
+    filtered_tokens: list[str] = []
+    for token in raw_tokens:
+        cleaned = token.strip("`~!@#$%^&*()_+=[]{}|\\:;\",<>/?")
+        if not cleaned:
+            continue
+        if cleaned.isdigit():
+            continue
+        if len(re.sub(r"[^A-Za-z]", "", cleaned)) <= 1:
+            continue
+        if _is_weird_mixed_case_token(cleaned):
+            continue
+        filtered_tokens.append(cleaned)
+
+    if not filtered_tokens:
+        return ""
+
+    full_candidate = " ".join(filtered_tokens).strip()
+    best_candidate = full_candidate
+    best_score = _ocr_text_quality_score(full_candidate)
+    best_density = best_score / max(len(re.findall(r"[A-Za-z']+", full_candidate)), 1)
+
+    for separator in [",", "|", "="]:
+        if separator not in compact:
+            continue
+        punct_suffix = compact.rsplit(separator, 1)[-1].strip()
+        if not punct_suffix:
+            continue
+        candidate = _clean_ocr_line_candidate(punct_suffix)
+        if not candidate:
+            continue
+        score = _ocr_text_quality_score(candidate)
+        density = score / max(len(re.findall(r"[A-Za-z']+", candidate)), 1)
+        if density > best_density + 0.5 or (density > best_density - 0.1 and score > best_score):
+            best_candidate = candidate
+            best_score = score
+            best_density = density
+
+    for start in range(len(filtered_tokens)):
+        suffix_tokens = filtered_tokens[start:]
+        if len(suffix_tokens) < 2:
+            continue
+        if start > 0 and not all(_token_looks_like_ocr_noise(token) for token in filtered_tokens[:start]):
+            continue
+        candidate = " ".join(suffix_tokens).strip()
+        score = _ocr_text_quality_score(candidate)
+        density = score / max(len(re.findall(r"[A-Za-z']+", candidate)), 1)
+        if density > best_density + 0.8 or (density > best_density and score > best_score):
+            best_candidate = candidate
+            best_score = score
+            best_density = density
+
+    return best_candidate
+
+
+def _looks_like_low_quality_ocr_line(text: str) -> bool:
+    compact = re.sub(r"\s+", " ", text).strip()
+    if not compact:
+        return True
+
+    alpha_tokens = re.findall(r"[A-Za-z']+", compact)
+    if not alpha_tokens:
+        return True
+    if len(alpha_tokens) <= 1 and sum(len(token) for token in alpha_tokens) < 5:
+        return True
+
+    short_tokens = sum(1 for token in alpha_tokens if len(token) <= 1)
+    vowel_only_tokens = sum(1 for token in alpha_tokens if re.fullmatch(r"[aeiouyAEIOUY]+", token))
+    weird_case_tokens = sum(1 for token in alpha_tokens if _is_weird_mixed_case_token(token))
+    avg_len = sum(len(token) for token in alpha_tokens) / max(len(alpha_tokens), 1)
+
+    if len(alpha_tokens) >= 4 and short_tokens / len(alpha_tokens) >= 0.45:
+        return True
+    if len(alpha_tokens) >= 4 and vowel_only_tokens / len(alpha_tokens) >= 0.4:
+        return True
+    if len(alpha_tokens) >= 4 and weird_case_tokens / len(alpha_tokens) >= 0.25:
+        return True
+    if len(alpha_tokens) >= 5 and avg_len < 2.2:
+        return True
+    if _ocr_text_quality_score(compact) < 8:
+        return True
+    return False
+
+
 def _looks_like_non_chat_ocr_line(text: str) -> bool:
     compact = re.sub(r"\s+", " ", text).strip().lower()
     if not compact:
@@ -108,6 +251,7 @@ def _looks_like_non_chat_ocr_line(text: str) -> bool:
         "free ai credits",
         "github account",
         "dont miss this opportunity",
+        "don't miss this opportunity",
         "get up to",
         "view channel",
         "unread messages",
@@ -144,21 +288,36 @@ def _segment_ocr_text_into_messages(text: str) -> list[dict]:
             for index, match in enumerate(matches):
                 start = match.end()
                 end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
-                candidate = line[start:end].strip(" -:|")
-                if candidate and len(re.sub(r"\W+", "", candidate)) >= 3 and not _looks_like_non_chat_ocr_line(candidate):
+                candidate = _clean_ocr_line_candidate(line[start:end])
+                if (
+                    candidate
+                    and len(re.sub(r"\W+", "", candidate)) >= 3
+                    and not _looks_like_non_chat_ocr_line(candidate)
+                    and not _looks_like_low_quality_ocr_line(candidate)
+                ):
                     segments.append(candidate)
-            prefix = line[: matches[0].start()].strip(" -:|")
-            if prefix and len(re.sub(r"\W+", "", prefix)) >= 3 and not _looks_like_non_chat_ocr_line(prefix):
+            prefix = _clean_ocr_line_candidate(line[: matches[0].start()])
+            if (
+                prefix
+                and len(re.sub(r"\W+", "", prefix)) >= 3
+                and not _looks_like_non_chat_ocr_line(prefix)
+                and not _looks_like_low_quality_ocr_line(prefix)
+            ):
                 segments.append(prefix)
             continue
 
-        cleaned = _strip_inline_timestamp(line)
-        if cleaned and len(re.sub(r"\W+", "", cleaned)) >= 3 and not _looks_like_non_chat_ocr_line(cleaned):
+        cleaned = _clean_ocr_line_candidate(_strip_inline_timestamp(line))
+        if (
+            cleaned
+            and len(re.sub(r"\W+", "", cleaned)) >= 3
+            and not _looks_like_non_chat_ocr_line(cleaned)
+            and not _looks_like_low_quality_ocr_line(cleaned)
+        ):
             segments.append(cleaned)
 
     if not segments:
-        fallback = _normalize_ocr_text(text)
-        if fallback:
+        fallback = _clean_ocr_line_candidate(_normalize_ocr_text(text))
+        if fallback and not _looks_like_non_chat_ocr_line(fallback) and not _looks_like_low_quality_ocr_line(fallback):
             segments = [fallback]
 
     return [
@@ -514,8 +673,13 @@ def persist_image_analysis(
 async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only image files are supported")
-        
+
+    started_at = time.perf_counter()
     content = await file.read()
+    print(
+        f"[image-upload] start filename={file.filename or 'uploaded-image'} "
+        f"size_bytes={len(content)} provider={OCR_PROVIDER}"
+    )
     extracted_text = extract_text_from_image_bytes(content)
 
     parsed_messages = _segment_ocr_text_into_messages(extracted_text)
@@ -572,5 +736,10 @@ async def upload_image(file: UploadFile = File(...), db: Session = Depends(get_d
     )
     db.add(result)
     db.commit()
-    
+
+    elapsed = time.perf_counter() - started_at
+    print(
+        f"[image-upload] complete filename={file.filename or 'uploaded-image'} "
+        f"messages={total_messages} elapsed_seconds={elapsed:.2f}"
+    )
     return {"chat_id": new_chat.id, "message": f"Successfully extracted and analyzed {total_messages} OCR message(s)."}

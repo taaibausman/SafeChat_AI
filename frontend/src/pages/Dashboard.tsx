@@ -166,9 +166,9 @@ export default function DashboardPage() {
   }, [userSummary]);
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(10,18,34,0.98),rgba(8,14,26,0.96))] p-5 shadow-[0_30px_120px_rgba(34,211,238,0.08)]">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+    <div className="mx-auto max-w-7xl space-y-4 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
+      <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(10,18,34,0.98),rgba(8,14,26,0.96))] p-4 shadow-[0_30px_120px_rgba(34,211,238,0.08)]">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
             <div className="rounded-2xl bg-cyan-500/14 p-3 text-cyan-300">
               <LayoutDashboard className="h-6 w-6" />
@@ -202,14 +202,14 @@ export default function DashboardPage() {
         </div>
 
         {isAdmin ? (
-          <div className="mt-6 grid gap-4 md:grid-cols-4">
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
             <StatCard label="Total users" value={adminStats.totalUsers} tone="cyan" />
             <StatCard label="Admin accounts" value={adminStats.adminUsers} tone="amber" />
             <StatCard label="Active users" value={adminStats.activeUsers} tone="emerald" />
             <StatCard label="Disabled users" value={adminStats.inactiveUsers} tone="rose" />
           </div>
         ) : (
-          <div className="mt-6 grid gap-4 md:grid-cols-3">
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
             <StatCard label="Total chats analyzed" value={summary?.total_chats ?? 0} tone="cyan" />
             <StatCard label="Flagged messages" value={summary?.flagged_messages ?? 0} tone="rose" />
             <StatCard label="Safe ratio" value={`${summary?.safe_ratio?.toFixed(1) ?? '100.0'}%`} tone="emerald" />
@@ -226,11 +226,11 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] backdrop-blur md:p-6">
+      <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] backdrop-blur md:p-5">
           <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">{isAdmin ? 'USERS' : 'QUEUE'}</p>
           <h2 className="text-xl font-semibold text-white md:text-2xl">{isAdmin ? 'Recent user accounts' : 'Recent analyses'}</h2>
-          <div className="mt-5 space-y-3">
+          <div className="mt-4 max-h-[34rem] space-y-3 overflow-auto pr-1">
             {isLoading ? (
               <div className="rounded-[20px] border border-dashed border-white/10 bg-slate-950/50 p-5 text-slate-400">
                 Loading {isAdmin ? 'user records' : 'recent analyses'}...
@@ -308,16 +308,16 @@ export default function DashboardPage() {
           )}
         </section>
 
-        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)] backdrop-blur md:p-6">
+        <section className="rounded-[24px] border border-white/8 bg-slate-900/78 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.35)] backdrop-blur md:p-5">
           <p className="mb-2 text-xs uppercase tracking-[0.22em] text-cyan-400">{isAdmin ? 'OPERATIONS' : 'STATUS'}</p>
           <h2 className="text-xl font-semibold text-white md:text-2xl">{isAdmin ? 'Admin overview' : 'Coverage'}</h2>
-          <div className="mt-5 space-y-4">
-            <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-5">
+          <div className="mt-4 space-y-3">
+            <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-4">
               <p className="text-sm text-slate-400">{isAdmin ? 'Moderation records' : 'Total messages analyzed'}</p>
               <p className="mt-3 text-3xl font-semibold text-white">{summary?.total_messages ?? 0}</p>
             </div>
             {isAdmin && (
-              <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-5">
+              <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-4">
                 <div className="flex items-center gap-3">
                   <ShieldCheck className="h-5 w-5 text-cyan-300" />
                   <div>
@@ -329,7 +329,7 @@ export default function DashboardPage() {
                 </div>
               </div>
             )}
-            <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-5">
+            <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-4">
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <p className="text-sm text-slate-400">Backend health</p>
@@ -341,7 +341,7 @@ export default function DashboardPage() {
                   {healthSummary?.attention_required ? 'Needs review' : 'Stable'}
                 </span>
               </div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
                   <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Bridge ops</p>
                   <p className="mt-2 text-sm text-white">
@@ -366,7 +366,7 @@ export default function DashboardPage() {
                 <p className="mt-4 text-xs text-cyan-300">Connected account: {healthSummary.bridge_ops.current_state.connected_phone}</p>
               )}
             </div>
-            <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-5">
+            <div className="rounded-[20px] border border-white/6 bg-slate-950/60 p-4">
               <p className="text-sm text-slate-400">{isAdmin ? 'Operational window' : 'Operational window'}</p>
               <p className="mt-3 text-sm leading-7 text-slate-300">
                 {healthSummary

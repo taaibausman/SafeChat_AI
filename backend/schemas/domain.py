@@ -149,6 +149,25 @@ class WhatsAppBridgeHealthResponse(BaseModel):
     detail: Optional[str] = None
 
 
+class WhatsAppChatDirectoryEntry(BaseModel):
+    chat_key: str
+    chat_type: str = "direct"
+    display_name: str
+    phone_number: Optional[str] = None
+    source: str = "recent"
+    recent_message_count: int = 0
+    last_activity_at: Optional[datetime] = None
+    is_monitored: bool = False
+
+
+class WhatsAppChatDirectoryResponse(BaseModel):
+    reachable: bool = False
+    status: Optional[str] = None
+    detail: Optional[str] = None
+    total: int = 0
+    items: List[WhatsAppChatDirectoryEntry] = []
+
+
 class WhatsAppBridgeEventResponse(BaseModel):
     id: int
     event_type: str
